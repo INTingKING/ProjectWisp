@@ -1,0 +1,8 @@
+data/
+*.fa
+*.fa.gz
+*.bgz
+*.fai
+*.gzi
+*.chain.gz
+node_modules/
