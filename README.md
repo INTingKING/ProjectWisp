@@ -22,6 +22,6 @@ Genome and annotation files are **not** in this repo (10 to 20 GB). A fetch scri
 - liftOver chains `hg38ToHs1` / `hs1ToHg38` from UCSC.
 
 ## Licence and usage
-The **code** is MIT licensed (see `LICENSE`).
+Everything made for this project (code, logo, graphics, docs) is MIT licensed (see `LICENSE`).
 
-The **data is not**. Genome and annotation files are downloaded at runtime from their sources and never redistributed here, and each keeps its own terms. The UCSC liftOver chain files in particular are free only for non-commercial use. If you build something commercial on ProjectWisp, check every data source's terms first.
+Files taken from elsewhere are not: they keep their original licences. Genome and annotation files are downloaded at runtime from their sources and never redistributed here, and each keeps its own terms. The UCSC liftOver chain files in particular are free only for non-commercial use. If you build something commercial on ProjectWisp, check every data source's terms first.
