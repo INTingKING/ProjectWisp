@@ -1480,6 +1480,12 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     laneLabel(varY, varH, "Variants");
     if (!store_.hasVariants()) {
         hint(varHdrY, "no variant file found in data/ (expects a bgzipped VCF + .tbi)");
+    } else if (phone && std::find(store_.variantContigs().begin(), store_.variantContigs().end(), ch.name) == store_.variantContigs().end()) {
+        std::string on;  // from the file's contigs, e.g. "chr22"
+        const auto& vc = store_.variantContigs();
+        for (size_t i = 0; i < vc.size() && i < 3; ++i) on += (i ? ", " : "") + vc[i];
+        if (vc.size() > 3) on += " and " + std::to_string(vc.size() - 3) + " more";
+        zoomNote(varY, varH, ("Variants available on " + on + " only for now").c_str());
     } else if (!detailed) {
         hint(varHdrY, "zoom below 3 Mb to load variants");
         zoomNote(varY, varH, "Pinch in to see variants");

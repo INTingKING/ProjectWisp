@@ -86,6 +86,11 @@ bool TrackStore::open(const std::string& dir, const std::string& variantVcf, std
         if (!tbx_[v]) {  // optional: run without variants
             if (fp_[v]) hts_close(fp_[v]);
             fp_[v] = nullptr;
+        } else {
+            int n = 0;
+            const char** names = tbx_seqnames(tbx_[v], &n);
+            for (int i = 0; i < n; ++i) varContigs_.push_back(names[i]);
+            free(names);
         }
     }
     thread_ = std::thread([this] { worker(); });

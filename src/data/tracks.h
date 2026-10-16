@@ -77,6 +77,7 @@ public:
     bool open(const std::string& trackDir, const std::string& variantVcf, std::string& err);
     bool hasVariants() const { return tbx_[int(Track::Variants)] != nullptr; }
     bool hasSv() const { return tbx_[int(Track::Sv)] != nullptr; }
+    const std::vector<std::string>& variantContigs() const { return varContigs_; }  // contigs in the variant file's index
     bool hasMethyl() const { return bw_ != nullptr; }
     // Returns the tile if cached, otherwise queues it and returns nullptr.
     TilePtr request(Track t, const std::string& chrom, int64_t tile);
@@ -98,6 +99,7 @@ private:
     std::string paths_[kTrackCount];
     htsFile* fp_[kTrackCount] = {};
     tbx_t* tbx_[kTrackCount] = {};
+    std::vector<std::string> varContigs_;
     void* bw_ = nullptr;  // methylation bigWig, read per tile by the worker only
     std::map<Key, Entry> map_;
     std::vector<Key> queue_;
