@@ -2019,22 +2019,24 @@ void App::drawLegend(ImVec2 A, ImVec2 B, FogRenderer& fog) {
     ImDrawList* rdl = ImGui::GetWindowDrawList();
     rdl->AddRectFilled(A, B, col(kPanel), 8);  // #171A21
     rdl->AddRect(A, B, col(kBorder), 8);
-    ImGui::SetCursorScreenPos(A);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 12));
+    // pinned header: 'Legend' + 'L to close' stay put; only the list below scrolls
+    ImGui::PushFont(fonts().uiBold);
+    const float th = ImGui::GetTextLineHeight();
+    rdl->AddText(ImVec2(A.x + 12, A.y + 12), col(kText), "Legend");
+    ImGui::PopFont();
+    ImGui::PushFont(fonts().monoSmall);
+    ImVec2 hs = ImGui::CalcTextSize("L to close");
+    rdl->AddText(ImVec2(B.x - 12 - hs.x, A.y + 12 + (th - hs.y) * 0.5f), col(kMuted), "L to close");
+    ImGui::PopFont();
+    const float headH = 12 + th + 8;
+    rdl->AddLine(ImVec2(A.x + 1, A.y + headH), ImVec2(B.x - 1, A.y + headH), col(kBorder));
+    ImGui::SetCursorScreenPos(ImVec2(A.x, A.y + headH + 1));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 4));
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 6);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, vec(kPanel, 0.f));
-    ImGui::BeginChild("##legend", ImVec2(B.x - A.x, B.y - A.y), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoBackground);
+    ImGui::BeginChild("##legend", ImVec2(B.x - A.x, B.y - A.y - headH - 2), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoBackground);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float x0 = ImGui::GetCursorScreenPos().x;
-    ImGui::PushFont(fonts().uiBold);
-    ImGui::TextColored(vec(kText), "Legend");
-    ImGui::PopFont();
-    ImGui::SameLine();
-    ImGui::PushFont(fonts().monoSmall);
-    ImGui::SetCursorPosX(B.x - A.x - 12 - ImGui::CalcTextSize("L to close").x);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(vec(kMuted), "L to close");
-    ImGui::PopFont();
 
     using Swatch = std::function<void(ImDrawList*, float, float, float, float)>;  // x0, y0, x1, y1 of the 16x10 box
     struct Hdr { const char* name; float y; };  // header text top, screen space at scroll 0
@@ -2152,7 +2154,7 @@ void App::drawLegend(ImVec2 A, ImVec2 B, FogRenderer& fog) {
         ImGui::PushFont(fonts().monoSmall);
         const float hh = ImGui::GetTextLineHeight();
         ImGui::PopFont();
-        const float top = ImGui::GetWindowPos().y;  // the child's top edge (inside the panel border)
+        const float top = ImGui::GetWindowPos().y;  // the child's top edge, just under the pinned header
         const float pad = 6.f, band = hh + 2 * pad;
         int cur = -1;
         for (int i = 0; i < int(hdrs.size()); ++i)
@@ -2162,8 +2164,7 @@ void App::drawLegend(ImVec2 A, ImVec2 B, FogRenderer& fog) {
             if (cur + 1 < int(hdrs.size())) y = std::min(y, hdrs[cur + 1].y - scrollY - pad - band);
             ImGui::PushClipRect(ImVec2(A.x + 1, A.y + 1), ImVec2(B.x - 1, B.y - 1), false);
             dl->PushClipRect(ImVec2(A.x + 1, A.y + 1), ImVec2(B.x - 7, B.y - 1), false);  // keep the scrollbar visible
-            dl->AddRectFilled(ImVec2(A.x + 1, y), ImVec2(B.x - 1, y + band), col(kPanel), y <= top ? 7.f : 0.f,
-                              ImDrawFlags_RoundCornersTop);
+            dl->AddRectFilled(ImVec2(A.x + 1, y), ImVec2(B.x - 1, y + band), col(kPanel), 0.f);
             dl->AddLine(ImVec2(A.x + 1, y + band), ImVec2(B.x - 1, y + band), col(kBorder));
             ImGui::PushFont(fonts().monoSmall);
             dl->AddText(ImVec2(x0, y + pad), col(0x6B7280), hdrs[cur].name);
