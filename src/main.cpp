@@ -42,6 +42,8 @@ int main(int argc, char** argv) {
         else if (a == "--pin") opt.pin = next();
         else if (a == "--variants") opt.variants = next();
         else if (a == "--search") opt.search = next();
+        else if (a == "--rsid-pack") opt.rsidPack = next();
+        else if (a == "--pack-card") opt.packCard = true;
         else if (a == "--search-group") opt.searchGroup = next();
         else if (a == "--search-more") opt.searchMore = true;
         else if (a == "--goto") opt.gotoQuery = next();

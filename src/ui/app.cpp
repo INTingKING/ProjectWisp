@@ -13,6 +13,11 @@
 
 namespace wisp {
 
+// measured from the built pack (scripts/fetch_rsid_pack.sh); shown on the download card
+static const char* kRsidPackSize = "408 MB";
+static const char* kRsidPackCount = "19.4 million";
+static const char* kRsidPackStream = "24.9 GB";
+
 using namespace theme;
 
 namespace {
@@ -159,6 +164,12 @@ bool App::init(const AppOptions& opt, std::string& err) {
         if (!parseLocus(opt.pin, ci, s, e)) { err = "bad --pin " + opt.pin; return false; }
         pinned_ = {true, ci, int64_t(s), false};
     }
+    {
+        std::string rp = opt.rsidPack.empty() ? opt.dataDir + "/packs/rsid/rsid.idx" : opt.rsidPack;
+        if (rsid_.open(rp)) std::fprintf(stderr, "rsID pack: %u rsIDs (%s)\n", rsid_.count(), rp.c_str());
+        else std::fprintf(stderr, "rsID pack: not installed (%s)\n", rp.c_str());
+        packCard_ = opt.packCard;
+    }
     if (!opt.search.empty()) {
         std::snprintf(searchBuf_, sizeof searchBuf_, "%s", opt.search.c_str());
         searchOpen_ = searchFocus_ = true;
@@ -265,7 +276,8 @@ void App::frame(FogRenderer& fog) {
         setView(viewCi_, s0, e0);
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-        if (searchOpen_) searchOpen_ = false, ImGui::SetWindowFocus(nullptr);
+        if (packCard_) {}  // the card closes itself
+        else if (searchOpen_) searchOpen_ = false, ImGui::SetWindowFocus(nullptr);
         else pinned_ = {};
     }
 
@@ -279,6 +291,7 @@ void App::frame(FogRenderer& fog) {
     drawRegion(dl, rgA, rgB, fog);
     drawCard(dl, cdA, cdB);
     drawSearch(D.x);
+    drawPackCard(D);
     ImGui::End();
 }
 
@@ -300,6 +313,16 @@ bool App::runQuery(const std::string& q) {
     if (q.find(':') != std::string::npos && parseLocus(q, ci, s, e)) {
         if (e - s <= 1) { s -= 50; e += 50; }  // single position: 100 bp around it
         jumpTo(ci, s, e);
+        return true;
+    }
+    if (q.size() > 2 && (q[0] == 'r' || q[0] == 'R') && (q[1] == 's' || q[1] == 'S') &&
+        q.find_first_not_of("0123456789", 2) == std::string::npos && q.size() < 13) {
+        RsidHit h;
+        unsigned long long n = std::stoull(q.substr(2));
+        if (n >= 4294967296ull || !rsid_.find(uint32_t(n), h) || (ci = ov_.find(h.chrom)) < 0) return false;
+        double c = double(h.pos) - 0.5;
+        jumpTo(ci, c - 100, c + 100);  // ~200 bp of context
+        pinned_ = {true, ci, h.pos - 1, false};
         return true;
     }
     auto hits = genes_.search(q, 8);
@@ -329,7 +352,8 @@ void App::drawSearch(float w) {
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, vec(kPanel));
     ImGui::SetNextItemWidth(bw);
     if (searchFocus_) { ImGui::SetKeyboardFocusHere(); searchFocus_ = false; }
-    bool enter = ImGui::InputTextWithHint("##search", "Gene or chr22:20,340,000", searchBuf_, sizeof searchBuf_,
+    const char* ph = rsid_.present() ? "Gene, rsID or chr22:20,340,000" : "Gene or chr22:20,340,000";
+    bool enter = ImGui::InputTextWithHint("##search", ph, searchBuf_, sizeof searchBuf_,
                                           ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
     bool active = ImGui::IsItemActive();
     if (ImGui::IsItemEdited()) { searchOpen_ = true; searchSel_ = 0; searchScroll_ = 0; searchMore_ = false; openGroup_.clear(); }
@@ -343,8 +367,8 @@ void App::drawSearch(float w) {
     bool hasText = q.find_first_not_of(' ') != std::string::npos;
     if (!searchOpen_ || !hasText) { dropA_ = dropB_ = ImVec2(-1, -1); return; }
     // rows: a coordinate row, gene hits, or the no-match row
-    enum Kind { kGeneRow, kLocusRow, kMoreRow, kCopiesRow };
-    struct Row { std::string label, sub, tag; const GeneEntry* g = nullptr; Kind kind = kGeneRow; int n = 0; };
+    enum Kind { kGeneRow, kLocusRow, kMoreRow, kCopiesRow, kRsRow, kHintRow, kPackRow };
+    struct Row { std::string label, sub, tag; const GeneEntry* g = nullptr; Kind kind = kGeneRow; int n = 0; RsidHit rs{}; };
     std::vector<Row> rows;
     int stickyIdx = -1, stickyEnd = -1;  // opened extra-copy group: main row index, one past its last copy
     const int cap = 8, maxVisible = 16;
@@ -353,6 +377,22 @@ void App::drawSearch(float w) {
         std::string t = ov_.chroms()[ci].name + ":" + commas(int64_t(s) + 1);
         if (e - s > 1) t += "-" + commas(int64_t(e));
         rows.push_back({"Go to", t, "", nullptr, kLocusRow});
+    } else if (q.size() > 2 && (q[0] == 'r' || q[0] == 'R') && (q[1] == 's' || q[1] == 'S') &&
+               q.find_first_not_of("0123456789 ", 2) == std::string::npos) {
+        // rsID: only with the optional variant pack
+        std::string num = q.substr(2);
+        num.erase(std::remove(num.begin(), num.end(), ' '), num.end());
+        RsidHit h;
+        if (!rsid_.present()) {
+            rows.push_back({"rsID search needs the optional variant pack, get it", "", "", nullptr, kPackRow});
+        } else if (!num.empty() && num.size() < 11 && std::stoull(num) < 4294967296ull && rsid_.find(uint32_t(std::stoull(num)), h)) {
+            Row r{"rs" + num, "", "", nullptr, kRsRow};
+            r.sub = h.chrom + ":" + commas(h.pos) + " " + h.ref + ">" + h.alt;
+            r.rs = h;
+            rows.push_back(r);
+        } else {
+            rows.push_back({"rs" + num + " isn't in the common-variant pack. It may be rare, retired, or not mapped to hs1.", "", "", nullptr, kHintRow});
+        }
     } else {
         auto hits = genes_.search(q, 2000);  // all matches (bounded); main copies already followed by their extra copies
         auto geneRow = [&](const GeneHit& h) {
@@ -396,7 +436,8 @@ void App::drawSearch(float w) {
             rows.push_back({"+" + std::to_string(n) + " more", "", "", nullptr, kMoreRow, n});
         }
     }
-    const float rh = 28;
+    const bool tallHint = rows.size() == 1 && (rows[0].kind == kHintRow || rows[0].kind == kPackRow);
+    const float rh = tallHint ? 48 : 28;  // wrapped two-line message
     int visible = std::min<int>(int(rows.size()), maxVisible);
     if (!rows.empty()) {
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) searchSel_ = std::min(int(rows.size()) - 1, searchSel_ + 1);
@@ -440,6 +481,24 @@ void App::drawSearch(float w) {
         if (hov && ImGui::IsMouseClicked(0)) clicked = i;
         if (i == searchSel_) fg->AddRectFilled(r0, r1, col(kHover), 4);
         float ty = r0.y + (rh - 15) * 0.5f;
+        if (rw.kind == kHintRow || rw.kind == kPackRow) {
+            fg->AddText(fonts().ui, 15, ImVec2(r0.x + 8, r0.y + 4), col(0x8A8F99), rw.label.c_str(), nullptr, r1.x - r0.x - 16);
+            if (rw.kind == kPackRow) {  // underline 'get it' as the affordance
+                float full = fonts().ui->CalcTextSizeA(15, FLT_MAX, 0, rw.label.c_str()).x;
+                float tail = fonts().ui->CalcTextSizeA(15, FLT_MAX, 0, "get it").x;
+                if (full < r1.x - r0.x - 16)
+                    fg->AddLine(ImVec2(r0.x + 8 + full - tail, r0.y + 21), ImVec2(r0.x + 8 + full, r0.y + 21), col(0x8A8F99));
+            }
+            continue;
+        }
+        if (rw.kind == kRsRow) {
+            float ty2 = r0.y + (rh - 15) * 0.5f;
+            fg->AddText(fonts().ui, 15, ImVec2(r0.x + 8, ty2 - 1), col(kText), rw.label.c_str());
+            float lw2 = fonts().ui->CalcTextSizeA(15, FLT_MAX, 0, rw.label.c_str()).x;
+            fg->AddText(fonts().ui, 15, ImVec2(r0.x + 8 + lw2 + 6, ty2 - 1), col(0x8A8F99), "\xC2\xB7");
+            fg->AddText(fonts().mono, 13, ImVec2(r0.x + 8 + lw2 + 18, ty2 + 1), col(0x8A8F99), rw.sub.c_str());
+            continue;
+        }
         if (rw.kind == kMoreRow || rw.kind == kCopiesRow) {
             fg->AddText(fonts().ui, 15, ImVec2(r0.x + 8 + (rw.kind == kCopiesRow ? 16 : 0), ty - 1), col(0x8A8F99), rw.label.c_str());
             continue;
@@ -473,7 +532,21 @@ void App::drawSearch(float w) {
     if (clicked >= 0) { searchSel_ = clicked; enter = true; }
     if (enter && !rows.empty()) {
         const Row& r = rows[size_t(searchSel_)];
-        if (r.kind == kMoreRow) {
+        if (r.kind == kHintRow) {
+            searchFocus_ = true;  // informational only
+        } else if (r.kind == kPackRow) {
+            packCard_ = true;
+            searchOpen_ = false;
+        } else if (r.kind == kRsRow) {
+            int rci = ov_.find(r.rs.chrom);
+            if (rci >= 0) {
+                double c = double(r.rs.pos) - 0.5;
+                jumpTo(rci, c - 100, c + 100);  // ~200 bp of context
+                pinned_ = {true, rci, r.rs.pos - 1, false};
+            }
+            searchOpen_ = false;
+            ImGui::SetWindowFocus(nullptr);
+        } else if (r.kind == kMoreRow) {
             searchMore_ = true;
             searchFocus_ = true;  // keep typing focus, list stays open
         } else if (r.kind == kCopiesRow) {
@@ -499,6 +572,44 @@ void App::drawSearch(float w) {
         searchOpen_ = false;
     }
     if (!searchOpen_) dropA_ = dropB_ = ImVec2(-1, -1);
+}
+
+void App::drawPackCard(ImVec2 D) {
+    if (!packCard_) return;
+    // minimal first-run download card, showing only the optional rsID pack
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), D, col(kBg, 0.55f));  // dims the root window only
+    searchOpen_ = false;
+    const float w = 460, h = 236;
+    ImGui::SetNextWindowPos(ImVec2((D.x - w) * 0.5f, (D.y - h) * 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(w, h));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, vec(kPanel));
+    ImGui::PushStyleColor(ImGuiCol_Border, vec(kBorder));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 16));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
+    ImGui::Begin("##packcard", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PushFont(fonts().monoSmall);
+    ImGui::TextColored(vec(kMuted), "OPTIONAL DOWNLOAD");
+    ImGui::PopFont();
+    ImGui::PushFont(fonts().uiBold);
+    ImGui::Text("Common variants (rsID search)");
+    ImGui::PopFont();
+    ImGui::TextColored(vec(kText, 0.9f), "%s on disk, %s rsIDs", kRsidPackSize, kRsidPackCount);
+    ImGui::PushTextWrapPos(w - 16);
+    ImGui::TextColored(vec(kMuted), "dbSNP 155 on T2T-CHM13 (UCSC), common variants only (1000 Genomes MAF >= 1%%). "
+                                    "Built by streaming the %s source file; nothing else is kept.", kRsidPackStream);
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    ImGui::PushFont(fonts().mono);
+    ImGui::TextColored(vec(kAccent), "scripts/fetch_rsid_pack.sh");
+    ImGui::PopFont();
+    ImGui::Spacing();
+    if (ImGui::Button("Copy command")) ImGui::SetClipboardText("scripts/fetch_rsid_pack.sh");
+    ImGui::SameLine();
+    if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape)) packCard_ = false;
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
 }
 
 void App::drawTopBar(ImDrawList* dl, float w) {

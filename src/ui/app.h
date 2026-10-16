@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "data/geneindex.h"
+#include "data/rsid.h"
 #include "data/genome.h"
 #include "data/overview.h"
 #include "data/tracks.h"
@@ -23,6 +24,8 @@ struct AppOptions {
     bool reducedMotion = false;
     bool expandSv = false;  // --expand sv
     bool expandCard = false;  // --expand-card
+    std::string rsidPack;  // --rsid-pack PATH (default data/packs/rsid/rsid.idx)
+    bool packCard = false;  // --pack-card: open the optional-download card
     std::string searchGroup;  // --search-group SYMBOL
     bool searchMore = false;  // --search-more: expanded "+N more" list
     std::string search;  // --search QUERY: open the search box with this text
@@ -60,6 +63,7 @@ private:
     void gather(int ci, int64_t s, int64_t e, Visible& v);
     void drawTopBar(ImDrawList* dl, float w);
     void drawSearch(float w);
+    void drawPackCard(ImVec2 display);
     bool runQuery(const std::string& q);  // jump to the best match; false if nothing matched
     void jumpTo(int ci, double s, double e);
     float drawCoverage(ImDrawList* dl, float y, float w);
@@ -83,6 +87,8 @@ private:
     float dragX0_ = 0;
     // gene search
     GeneIndex genes_;
+    RsidIndex rsid_;
+    bool packCard_ = false;
     char searchBuf_[96] = {};
     bool searchOpen_ = false, searchFocus_ = false;
     int searchSel_ = 0, searchScroll_ = 0;
