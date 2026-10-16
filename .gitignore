@@ -6,3 +6,5 @@ data/
 *.gzi
 *.chain.gz
 node_modules/
+build/
+build-*/
