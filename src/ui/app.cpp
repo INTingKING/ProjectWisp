@@ -172,6 +172,7 @@ void App::setView(int ci, double s, double e) {
 float App::stretchAlpha(float share, float p5, float p95) const {
     if (share <= 0.f) return 0.f;
     float t = p95 > p5 ? std::clamp((share - p5) / (p95 - p5), 0.f, 1.f) : 1.f;
+    t = t * t;  // gamma 2
     return 0.1f + (0.85f - 0.1f) * t;
 }
 
