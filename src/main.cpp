@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
                         std::vector<uint8_t> px;
                         vk.readback(px);
                         if (!writePng(shot, int(vk.extent.width), int(vk.extent.height), px)) { std::fprintf(stderr, "png write failed\n"); rc = 1; }
-                        else std::fprintf(stderr, "wrote %s after %d frames (%.1fs)\n", shot.c_str(), frame, secs);
+                        else std::fprintf(stderr, "wrote %s after %d frames (%.1fs); SV track draw %.2f ms\n", shot.c_str(), frame, secs, app.svMs());
                         running = false;
                     }
                 }

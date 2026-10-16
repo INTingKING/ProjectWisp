@@ -32,6 +32,10 @@ if [ ! -s ccre.hs1.bed ]; then
   tools/liftOver -bedPlus=9 -tab ccre.hg38.min.bed hg38ToHs1.over.chain.gz ccre.hs1.unsorted.bed ccre.unmapped.bed
   sort -k1,1 -k2,2n ccre.hs1.unsorted.bed > ccre.hs1.bed && rm ccre.hs1.unsorted.bed
 fi
+# CpG methylation (CHM13 nanopore, bigWig ~177 MB); read per visible region by the app
+mkdir -p tracks
+[ -s tracks/chm13v2.0_CpG_methylation.bw ] || curl -fL --retry 3 -o tracks/chm13v2.0_CpG_methylation.bw \
+  $T2T/annotation/regulation/chm13v2.0_CHM13_CpG_ont_guppy3.6.0_nanopolish0.13.2.bw
 # structural variants (HPRC pangenome, 3 GB download, filtered to ~tens of MB)
 "$S/fetch_sv.sh" "$(pwd)" || echo "SV track skipped"
 echo "done: $(pwd)"

@@ -24,7 +24,9 @@ FetchContent_Declare(vkbootstrap GIT_REPOSITORY https://github.com/charles-lunar
 FetchContent_Declare(vma GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git GIT_TAG v3.3.0 GIT_SHALLOW TRUE)
 FetchContent_Declare(stb GIT_REPOSITORY https://github.com/nothings/stb.git GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
   SOURCE_SUBDIR no-cmake)
-FetchContent_MakeAvailable(SDL3 imgui vkbootstrap vma stb)
+set(WITH_CURL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(libbigwig GIT_REPOSITORY https://github.com/dpryan79/libBigWig.git GIT_TAG 0.4.9 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(SDL3 imgui vkbootstrap vma stb libbigwig)
 
 add_library(imgui STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp ${imgui_SOURCE_DIR}/imgui_tables.cpp
@@ -69,7 +71,7 @@ add_executable(wisp
   src/ui/app.cpp src/ui/theme.cpp
   ${SHADER_HEADERS})
 target_include_directories(wisp PRIVATE src ${SHADER_OUT} ${stb_SOURCE_DIR} ${vma_SOURCE_DIR}/include)
-target_link_libraries(wisp PRIVATE imgui vk-bootstrap::vk-bootstrap Vulkan::Vulkan PkgConfig::HTS)
+target_link_libraries(wisp PRIVATE imgui vk-bootstrap::vk-bootstrap Vulkan::Vulkan PkgConfig::HTS libBigWig::libbigwig)
 target_compile_definitions(wisp PRIVATE WISP_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets")
 if(MSVC)
   target_compile_options(wisp PRIVATE /W3)

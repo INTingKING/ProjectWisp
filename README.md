@@ -57,6 +57,8 @@ Variants: the first `*.vcf.gz` with a `.tbi` in `data/` (here the 1KGP CHM13 chr
 
 Structural variants: `scripts/fetch_sv.sh` (also called from `fetch_data.sh`) downloads the HPRC v1.1 Minigraph-Cactus CHM13 VCF (3.0 GB), keeps sites only, splits multi-allelic records, keeps ins/del/complex with abs(LEN) >= 50 plus INV-flagged records, writes `data/tracks/sv.hprc.vcf.gz` (~91 MB + .tbi) and deletes the raw file. Needs bcftools and ~8 GB free while it runs.
 
+CpG methylation: `fetch_data.sh` downloads the CHM13 nanopore CpG bigWig (177 MB) to `data/tracks/`; libBigWig (FetchContent, no curl) reads it per 1 Mb tile through the same loader/cache. It is drawn as a 4 px strip at the bottom of the regulatory track (#2A2F3A low -> #C9A6FF high, per-pixel mean).
+
 Interaction: click a chromosome in the overview (or drag across it) to open it; mouse wheel zooms, drag pans, click pins the lookup card; the box at the top right of the region view accepts a locus. Above 3 Mb the region view draws densities from the summary; below 3 Mb features load from tabix in 1 Mb tiles (LRU cache, ~100 MB cap); below 20 kb the sequence lane appears, with A/C/G/T letters once a base is at least 8 px wide.
 
 ## Data

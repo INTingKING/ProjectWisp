@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <chrono>
 #include <filesystem>
 #include <set>
 
@@ -194,6 +195,7 @@ void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
         for (int k = 0; k < kTrackCount; ++k) {
             if (k == int(Track::Variants) && !store_.hasVariants()) continue;
             if (k == int(Track::Sv) && !store_.hasSv()) continue;
+            if (k == int(Track::Methyl) && !store_.hasMethyl()) continue;
             TilePtr tile = store_.request(Track(k), chrom, t);
             if (!tile) { v.loading[k] = true; continue; }
             v.hold.push_back(tile);
@@ -205,6 +207,7 @@ void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
             for (auto& x : tile->notin) if (x.e > s && x.s < e) v.notin.push_back(&x);
             for (auto& x : tile->variants) if (x.e > s && x.s < e) v.variants.push_back(&x);
             for (auto& x : tile->svs) if (x.e > s && x.s < e) v.svs.push_back(&x);
+            for (auto& x : tile->methyl) if (int64_t(x.e) > s && int64_t(x.s) < e) v.methyl.push_back(&x);
         }
     }
 }
@@ -682,13 +685,40 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // cCREs, repeats, not-in-GRCh38
     const float ccreY = y + hdrH, repY = ccreY + ccreH + 6 + hdrH, niY = repY + repH + 6;
     laneLabel(ccreY, ccreH, "Regulatory");
+    // CpG methylation heat strip (4 px) at the bottom of the regulatory track: per-pixel mean, #2A2F3A -> #C9A6FF
+    if (store_.hasMethyl()) {
+        const float my0 = ccreY + ccreH - 4, my1 = ccreY + ccreH;
+        if (!detailed) {
+            hint(ccreY - hdrH, "cCREs (ENCODE)  |  methylation strip: zoom below 3 Mb");
+        } else if (vis.loading[int(Track::Methyl)]) {
+            hint(ccreY - hdrH, "cCREs (ENCODE)  |  loading CpG methylation...");
+        } else {
+            std::vector<float> sum(cols, 0.f);
+            std::vector<int> n(cols, 0);
+            for (auto* m : vis.methyl) {
+                int px = int((double(m->s) - viewS_) * pxPerBp);
+                if (px < 0 || px >= cols) continue;
+                sum[px] += m->frac;
+                ++n[px];
+            }
+            ImVec4 lo = vec(0x2A2F3A), hi = vec(0xC9A6FF);
+            for (int px = 0; px < cols; ++px) {
+                if (!n[px]) continue;
+                float t = std::clamp(sum[px] / n[px], 0.f, 1.f);
+                ImVec4 c(lo.x + (hi.x - lo.x) * t, lo.y + (hi.y - lo.y) * t, lo.z + (hi.z - lo.z) * t, 1.f);
+                float w = std::max(1.f, float(pxPerBp * 2));  // CpG = 2 bp
+                dl->AddRectFilled(ImVec2(tx0 + px, my0), ImVec2(std::min(tx1, tx0 + px + w), my1), ImGui::ColorConvertFloat4ToU32(c));
+            }
+            hint(ccreY - hdrH, "cCREs (ENCODE)  |  bottom strip: CpG methylation (CHM13 nanopore), dark = low, violet = high");
+        }
+    }
     laneLabel(repY, repH, "Repeats");
     laneLabel(niY, niH, "Not in GRCh38");
     if (detailed) {
         ImGui::PushFont(fonts().mono);
         for (auto* c : vis.ccres) {
             float x0 = std::max(tx0, X(double(c->s))), x1 = std::min(tx1, std::max(X(double(c->e)), x0 + 1));
-            dl->AddRectFilled(ImVec2(x0, ccreY), ImVec2(x1, ccreY + ccreH), col(kColCcre));
+            dl->AddRectFilled(ImVec2(x0, ccreY), ImVec2(x1, ccreY + ccreH - 6), col(kColCcre));
         }
         for (auto* r : vis.repeats) {
             float x0 = std::max(tx0, X(double(r->s))), x1 = std::min(tx1, std::max(X(double(r->e)), x0 + 1));
@@ -763,6 +793,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // Expanded: greedy sub-rows, 6 px + 1 px gap, max 8 rows, '+N more' for overflow.
     const float svH = svExpanded_ ? std::max(20.f, svRowsLast_ * 7.f - 1.f + 6.f) : 20.f;
     const float svHdrY = varY + varH + 6, svY = svHdrY + hdrH;
+    auto svT0 = std::chrono::steady_clock::now();
     laneLabel(svY, std::min(svH, 20.f), "SVs");
     {  // expand / collapse chevron at the right of the header line
         ImVec2 c(tx1 - 6, svHdrY + 7);
@@ -820,14 +851,19 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             std::vector<const Sv*> bars;
             for (auto* v : vis.svs) if (v->type != SvType::Ins) bars.push_back(v);
             std::stable_sort(bars.begin(), bars.end(), [](auto* a2, auto* b2) { return (a2->e - a2->s) > (b2->e - b2->s); });
-            std::vector<std::pair<float, float>> drawn;  // px extents of bigger bars already drawn
+            // union of px extents already drawn (disjoint, keyed by start): overlap query + merge in O(log n)
+            std::map<float, float> drawn;
             for (auto* v : bars) {
                 float x0, x1;
                 extent(v, x0, x1);
-                bool covered = false;
-                for (auto& d : drawn) if (d.first < x1 && x0 < d.second) { covered = true; break; }
+                auto it = drawn.upper_bound(x0);
+                bool covered = (it != drawn.end() && it->first < x1);
+                if (it != drawn.begin() && std::prev(it)->second > x0) covered = true;
                 drawBar(v, x0, x1, svY + 5, svY + svH - 3, covered);
-                drawn.push_back({x0, x1});
+                float m0 = x0, m1 = x1;  // merge [x0,x1) into the union
+                if (it != drawn.begin() && std::prev(it)->second >= x0) { --it; m0 = std::min(m0, it->first); }
+                while (it != drawn.end() && it->first <= x1) { m1 = std::max(m1, it->second); it = drawn.erase(it); }
+                drawn[m0] = m1;
             }
             for (auto* v : vis.svs) if (v->type == SvType::Ins) drawIns(v, svY + 6, svY + svH - 2, true);
             svRowsLast_ = 1;
@@ -869,6 +905,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                            nIns, nDel, nInv, nCx, svExpanded_ ? "expanded" : "collapsed");
         hint(svHdrY, h);
     }
+    svMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - svT0).count();
     const float tracksBottom = svY + svH;
 
     // fog over 'nothing known' columns, spanning all lanes
@@ -1137,6 +1174,24 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
         // ---------- what it might do ----------
         separator();
         heading("WHAT IT MIGHT DO");
+        // CpG methylation: the CpG at this base, else mean of CpGs within 100 bp
+        if (store_.hasMethyl()) {
+            Visible mv;
+            gather(p.ci, std::max<int64_t>(0, p.pos - 100), p.pos + 101, mv);
+            float exact = -1, sum = 0;
+            int nn = 0;
+            for (auto* m : mv.methyl) {
+                if (int64_t(m->s) <= p.pos && p.pos < int64_t(m->e)) exact = m->frac;
+                sum += m->frac;
+                ++nn;
+            }
+            if (exact >= 0 || nn) {
+                swatch(0xC9A6FF);
+                if (exact >= 0) ImGui::TextColored(vec(kText, 0.95f), "CpG methylation: %.0f%% (CHM13, nanopore)", exact * 100);
+                else ImGui::TextColored(vec(kText, 0.95f), "CpG methylation nearby: %.0f%% (%d CpGs within 100 bp; CHM13, nanopore)", sum / nn * 100, nn);
+                ImGui::TextColored(vec(kMuted), "High usually means packed, silent DNA; low often marks active promoters and enhancers.");
+            }
+        }
         if (v.ccres.empty()) {
             ImGui::TextColored(vec(kMuted), "No known regulatory element");
         } else {

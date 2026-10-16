@@ -45,6 +45,7 @@ private:
         std::vector<const Interval*> notin;
         std::vector<const Variant*> variants;
         std::vector<const Sv*> svs;
+        std::vector<const MethylSite*> methyl;
         bool loading[kTrackCount] = {};
         std::vector<TilePtr> hold;
     };
@@ -72,6 +73,10 @@ private:
     char gotoBuf_[96] = {};
     bool svExpanded_ = false;  // per session only, never saved
     int svRowsLast_ = 1;
+    double svMs_ = 0;  // last SV-track draw time (shot mode reports it)
+public:
+    double svMs() const { return svMs_; }
+private:
     // 5th/95th percentile of per-bin share (known = exon+cCRE, nothing), for overview contrast stretch
     float knownP5_ = 0, knownP95_ = 1, nothingP5_ = 0, nothingP95_ = 1;
     float stretchAlpha(float share, float p5, float p95) const;
