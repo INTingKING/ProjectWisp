@@ -347,7 +347,6 @@ void App::drawSearch(float w) {
         for (auto& h : genes_.search(q, 8)) {
             Row r{h.g->name, h.g->chrom + ":" + commas(h.g->s + 1), "", h.g};
             if (h.tier == 2) r.tag = "alias of " + h.g->name, r.label = h.alias;
-            if (h.g->extra) r.tag = r.tag.empty() ? "extra copy" : r.tag + ", extra copy";
             rows.push_back(r);
         }
     }
@@ -376,12 +375,22 @@ void App::drawSearch(float w) {
         fg->AddText(fonts().ui, 15, ImVec2(r0.x + 8, ty - 1), col(kText), rows[i].label.c_str());
         float lw = fonts().ui->CalcTextSizeA(15, FLT_MAX, 0, rows[i].label.c_str()).x;
         fg->AddText(fonts().mono, 13, ImVec2(r0.x + 8 + lw + 10, ty + 1), col(0x8A8F99), rows[i].sub.c_str());
-        if (!rows[i].tag.empty()) {
-            float tw = fonts().monoSmall->CalcTextSizeA(11, FLT_MAX, 0, rows[i].tag.c_str()).x;
-            ImVec2 p0(r1.x - tw - 14, r0.y + 6), p1(r1.x - 4, r1.y - 6);
-            fg->AddRectFilled(p0, p1, col(kBorder), 8);
-            fg->AddText(fonts().monoSmall, 11, ImVec2(p0.x + 5, p0.y + 1), col(kMuted), rows[i].tag.c_str());
-        }
+        float px = r1.x - 4;
+        auto pill = [&](const std::string& t, bool extra) {
+            float tw = fonts().monoSmall->CalcTextSizeA(11, FLT_MAX, 0, t.c_str()).x;
+            ImVec2 p0(px - tw - 10, r0.y + 6), p1(px, r1.y - 6);
+            if (extra) {
+                fg->AddRectFilled(p0, p1, col(0x8A8F99, 0.18f), 8);
+                fg->AddRect(p0, p1, col(0x8A8F99), 8);
+                fg->AddText(fonts().monoSmall, 11, ImVec2(p0.x + 5, p0.y + 1), col(0x8A8F99), t.c_str());
+            } else {
+                fg->AddRectFilled(p0, p1, col(kBorder), 8);
+                fg->AddText(fonts().monoSmall, 11, ImVec2(p0.x + 5, p0.y + 1), col(kMuted), t.c_str());
+            }
+            px = p0.x - 4;
+        };
+        if (rows[i].g && rows[i].g->extra) pill("extra copy", true);
+        if (!rows[i].tag.empty()) pill(rows[i].tag, false);
     }
     if (clicked >= 0) { searchSel_ = clicked; enter = true; }
     if (enter && !rows.empty()) {
