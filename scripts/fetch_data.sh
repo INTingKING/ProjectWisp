@@ -36,6 +36,19 @@ fi
 mkdir -p tracks
 [ -s tracks/chm13v2.0_CpG_methylation.bw ] || curl -fL --retry 3 -o tracks/chm13v2.0_CpG_methylation.bw \
   $T2T/annotation/regulation/chm13v2.0_CHM13_CpG_ont_guppy3.6.0_nanopolish0.13.2.bw
-# structural variants (HPRC pangenome, 3 GB download, filtered to ~tens of MB)
-"$S/fetch_sv.sh" "$(pwd)" || echo "SV track skipped"
+# structural variants: prebuilt filtered file from the GitHub data release (~87 MB, checksum-verified),
+# falling back to building it from the raw 3 GB HPRC VCF (scripts/fetch_sv.sh)
+source "$S/../assets/data_release.conf"
+SHA() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+fetch_verified() {  # url dest sha
+  [ -s "$2" ] && [ "$(SHA "$2")" = "$3" ] && return 0
+  curl -fL --retry 3 -o "$2.part" "$1" || { rm -f "$2.part"; return 1; }
+  [ "$(SHA "$2.part")" = "$3" ] || { echo "checksum mismatch: $1"; rm -f "$2.part"; return 1; }
+  mv "$2.part" "$2"
+}
+if ! { fetch_verified "$DATA_BASE_URL/sv.hprc.vcf.gz" tracks/sv.hprc.vcf.gz "$SV_VCF_SHA256" \
+       && fetch_verified "$DATA_BASE_URL/sv.hprc.vcf.gz.tbi" tracks/sv.hprc.vcf.gz.tbi "$SV_TBI_SHA256"; }; then
+  echo "prebuilt SV file unavailable; building from the raw HPRC VCF"
+  "$S/fetch_sv.sh" "$(pwd)" || echo "SV track skipped"
+fi
 echo "done: $(pwd)"

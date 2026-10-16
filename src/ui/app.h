@@ -21,6 +21,7 @@ namespace wisp {
 
 struct AppOptions {
     std::string dataDir = "data";
+    std::string assetsDir = "assets";  // set from the executable location (data_release.conf lives here)
     std::string region;  // "chr22:30,000,000-30,050,000" or "chr22"
     std::string pin;     // "chr22:12345" pins the lookup card
     std::string variants;  // bgzipped+tabixed VCF; default: first *.vcf.gz with .tbi in dataDir
@@ -28,9 +29,8 @@ struct AppOptions {
     bool expandSv = false;  // --expand sv
     bool expandCard = false;  // --expand-card
     std::string rsidPack;  // --rsid-pack PATH (default data/packs/rsid/rsid.idx)
-    bool packCard = false;
-    bool packDownload = false;  // --pack-download: start the background pack build at launch
-    bool expandRare = false;  // --expand-rare  // --pack-card: open the optional-download card
+    bool packCard = false;  // --pack-card: open the optional-download card
+    bool packDownload = false;  // --pack-download: start the background pack download at launch
     std::string searchGroup;  // --search-group SYMBOL
     bool searchMore = false;  // --search-more: expanded "+N more" list
     std::string search;  // --search QUERY: open the search box with this text
@@ -95,12 +95,12 @@ private:
     GeneIndex genes_;
     RsidIndex rsid_;
     RsidHit lastRs_{};          // last rsID jumped to (card shows its dbSNP line at that position)
-    bool rareOpen_ = false;     // "+N rare alleles" expanded
-    // background pack download (scripts/fetch_rsid_pack.sh run in a thread, progress parsed from its stderr)
+    // background pack download: prebuilt rsid.idx from the GitHub data release, SHA-256 checked
     std::thread dlThread_;
     std::atomic<int> dlState_{0};  // 0 idle, 1 running, 2 done, 3 failed
     std::atomic<long long> dlBytes_{0}, dlTotal_{0};
-    std::atomic<int> dlPhase_{0};  // 0 download, 1 sort, 2 index
+    std::atomic<int> dlPhase_{0};  // 0 download, 1 verify
+    std::string dlPart_;           // file being downloaded (progress = its size)
     std::mutex dlMu_;
     std::string dlMsg_;
     bool manualOpen_ = false;

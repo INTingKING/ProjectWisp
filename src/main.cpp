@@ -45,7 +45,6 @@ int main(int argc, char** argv) {
         else if (a == "--rsid-pack") opt.rsidPack = next();
         else if (a == "--pack-card") opt.packCard = true;
         else if (a == "--pack-download") opt.packDownload = true;
-        else if (a == "--expand-rare") opt.expandRare = true;
         else if (a == "--search-group") opt.searchGroup = next();
         else if (a == "--search-more") opt.searchMore = true;
         else if (a == "--goto") opt.gotoQuery = next();
@@ -78,7 +77,8 @@ int main(int argc, char** argv) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
-    theme::apply(findAssets(argv[0]).c_str());
+    opt.assetsDir = findAssets(argv[0]);
+    theme::apply(opt.assetsDir.c_str());
     if (window) ImGui_ImplSDL3_InitForVulkan(window);
     ImGui_ImplVulkan_InitInfo ii{};
     ii.ApiVersion = VK_API_VERSION_1_1;

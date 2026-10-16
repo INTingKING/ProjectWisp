@@ -170,7 +170,6 @@ bool App::init(const AppOptions& opt, std::string& err) {
         if (rsid_.open(rp)) std::fprintf(stderr, "rsID pack: %u rsIDs (%s)\n", rsid_.count(), rp.c_str());
         else std::fprintf(stderr, "rsID pack: not installed (%s)\n", rp.c_str());
         packCard_ = opt.packCard;
-        rareOpen_ = opt.expandRare;
         if (opt.packDownload) startPackDownload();
     }
     if (!opt.search.empty()) {
@@ -224,7 +223,7 @@ float App::stretchAlpha(float share, float p5, float p95) const {
     return 0.1f + (0.85f - 0.1f) * t;
 }
 
-bool App::idle() const { return store_.pending() == 0 && !animating_ && clock_ - hlT0_ > 0.75; }  // shots catch the outline mid-fade
+bool App::idle() const { return store_.pending() == 0 && dlState_ != 1 && !animating_ && clock_ - hlT0_ > 0.75; }  // shots catch the outline mid-fade
 
 void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
     const std::string& chrom = ov_.chroms()[ci].name;
@@ -585,35 +584,74 @@ App::~App() {
     if (dlThread_.joinable()) dlThread_.detach();  // the build script keeps running; its output lands in data/packs
 }
 
+static std::map<std::string, std::string> readConf(const std::string& path) {
+    std::map<std::string, std::string> m;
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return m;
+    char line[512];
+    while (std::fgets(line, sizeof line, f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        auto eq = l.find('=');
+        if (l.empty() || l[0] == '#' || eq == std::string::npos) continue;
+        m[l.substr(0, eq)] = l.substr(eq + 1);
+    }
+    std::fclose(f);
+    return m;
+}
+
+static std::string sha256Of(const std::string& path) {  // system tool: sha256sum (Linux) or shasum (macOS)
+    std::string cmd = "(sha256sum '" + path + "' 2>/dev/null || shasum -a 256 '" + path + "') 2>/dev/null";
+    FILE* p = popen(cmd.c_str(), "r");
+    if (!p) return {};
+    char buf[160] = {};
+    std::string out = std::fgets(buf, sizeof buf, p) ? std::string(buf) : std::string();
+    pclose(p);
+    return out.substr(0, out.find_first_of(" \t\n"));
+}
+
 void App::startPackDownload() {
     if (dlState_ == 1) return;
     namespace fs = std::filesystem;
     std::error_code ec;
-    std::string script;
-    if (const char* env = std::getenv("WISP_RSID_SCRIPT")) script = env;  // testing hook
-    for (auto c : {opt_.dataDir + "/../scripts/fetch_rsid_pack.sh", std::string("scripts/fetch_rsid_pack.sh")})
-        if (script.empty() && fs::exists(c, ec)) script = fs::absolute(c, ec).string();
-    if (script.empty()) { std::lock_guard<std::mutex> l(dlMu_); dlMsg_ = "fetch_rsid_pack.sh not found"; dlState_ = 3; return; }
-    std::string data = fs::absolute(opt_.dataDir, ec).string();
-    dlState_ = 1; dlBytes_ = 0; dlTotal_ = 0; dlPhase_ = 0;
+    auto conf = readConf(opt_.assetsDir + "/data_release.conf");
+    std::string base = std::getenv("WISP_DATA_BASE_URL") ? std::getenv("WISP_DATA_BASE_URL") : conf["DATA_BASE_URL"];  // env: testing
+    std::string want = conf["RSID_IDX_SHA256"];
+    long long bytes = std::atoll(conf["RSID_IDX_BYTES"].c_str());
+    if (base.empty() || want.empty()) { std::lock_guard<std::mutex> l(dlMu_); dlMsg_ = "assets/data_release.conf missing"; dlState_ = 3; return; }
+    std::string dest = opt_.rsidPack.empty() ? opt_.dataDir + "/packs/rsid/rsid.idx" : opt_.rsidPack;
+    fs::create_directories(fs::path(dest).parent_path(), ec);
+    dlPart_ = dest + ".part";
+    dlState_ = 1; dlBytes_ = 0; dlTotal_ = bytes; dlPhase_ = 0;
     if (dlThread_.joinable()) dlThread_.join();
-    dlThread_ = std::thread([this, script, data] {
-        std::string cmd = "bash '" + script + "' '" + data + "' 2>&1";
+    dlThread_ = std::thread([this, base, want, dest] {
+        std::string cmd = "curl -fL --retry 3 -sS -o '" + dlPart_ + "' '" + base + "/rsid.idx' 2>&1";
         FILE* pp = popen(cmd.c_str(), "r");
-        if (!pp) { std::lock_guard<std::mutex> l(dlMu_); dlMsg_ = "could not start the build script"; dlState_ = 3; return; }
+        std::string err;
         char line[512];
-        std::string last;
-        while (std::fgets(line, sizeof line, pp)) {
-            long long b = 0, t = 0;
-            if (std::sscanf(line, "PROGRESS %lld %lld", &b, &t) == 2) { dlBytes_ = b; dlTotal_ = t; continue; }
-            if (!std::strncmp(line, "PHASE sort", 10)) dlPhase_ = 1;
-            else if (!std::strncmp(line, "PHASE index", 11)) dlPhase_ = 2;
-            last = line;
+        while (pp && std::fgets(line, sizeof line, pp)) err = line;
+        int rc = pp ? pclose(pp) : -1;
+        std::error_code ec2;
+        if (rc != 0) {
+            std::filesystem::remove(dlPart_, ec2);
+            std::lock_guard<std::mutex> l(dlMu_);
+            dlMsg_ = err.empty() ? "download failed" : err;
+            while (!dlMsg_.empty() && dlMsg_.back() == '\n') dlMsg_.pop_back();
+            dlState_ = 3;
+            return;
         }
-        int rc = pclose(pp);
+        dlPhase_ = 1;  // verifying
+        std::string got = sha256Of(dlPart_);
+        if (got != want) {
+            std::filesystem::remove(dlPart_, ec2);
+            std::lock_guard<std::mutex> l(dlMu_);
+            dlMsg_ = "checksum mismatch (got " + got.substr(0, 12) + "...)";
+            dlState_ = 3;
+            return;
+        }
+        std::filesystem::rename(dlPart_, dest, ec2);
         std::lock_guard<std::mutex> l(dlMu_);
-        if (rc == 0) dlState_ = 2;
-        else { dlMsg_ = last.empty() ? "build failed" : last; dlState_ = 3; }
+        if (ec2) { dlMsg_ = "could not move the pack into place"; dlState_ = 3; } else dlState_ = 2;
     });
 }
 
@@ -645,26 +683,28 @@ void App::drawPackCard(ImVec2 D) {
     ImGui::PushFont(fonts().uiBold);
     ImGui::Text("Common variants (rsID search)");
     ImGui::PopFont();
-    ImGui::SameLine(w - 16 - ImGui::CalcTextSize(kRsidPackSize).x - 16);
+    ImGui::SameLine(w - 16 - ImGui::CalcTextSize((std::string(kRsidPackSize) + " download").c_str()).x - 24);
     ImGui::PushFont(fonts().mono);
-    ImGui::TextColored(vec(kText), "%s", kRsidPackSize);
+    ImGui::TextColored(vec(kText), "%s download", kRsidPackSize);
     ImGui::PopFont();
     ImGui::PushTextWrapPos(w - 16);
     ImGui::TextColored(vec(kMuted), "%s rsIDs from dbSNP 155 on T2T-CHM13 (UCSC), common variants only (minor allele >= 1%% in any "
-                                    "1000 Genomes population). Built by streaming the %s source file; only the index is kept.",
-                       kRsidPackCount, kRsidPackStream);
+                                    "1000 Genomes population).",
+                       kRsidPackCount);
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
     int st = dlState_;
     if (rsid_.present()) {
         ImGui::TextColored(vec(kAccent), "Installed. Type an rs number in the search box.");
     } else if (st == 1) {
-        long long b = dlBytes_, t = dlTotal_;
+        std::error_code ec;
+        long long b = (long long)std::filesystem::file_size(dlPart_, ec), t = dlTotal_;
+        if (ec) b = 0;
         int ph = dlPhase_;
-        float frac = ph == 0 ? (t > 0 ? float(double(b) / double(t)) : 0.f) : 1.f;
+        float frac = ph == 0 ? (t > 0 ? std::min(1.f, float(double(b) / double(t))) : 0.f) : 1.f;
         char over[96];
-        if (ph == 0) std::snprintf(over, sizeof over, "Downloading %.1f / %.1f GB", b / 1e9, t / 1e9);
-        else std::snprintf(over, sizeof over, ph == 1 ? "Sorting rsIDs..." : "Writing index...");
+        if (ph == 0) std::snprintf(over, sizeof over, "Downloading %.0f / %.0f MB", b / 1048576.0, t / 1048576.0);
+        else std::snprintf(over, sizeof over, "Verifying checksum...");
         ImGui::ProgressBar(frac, ImVec2(w - 32, 20), over);
     } else {
         if (st == 3) { std::lock_guard<std::mutex> l(dlMu_); ImGui::TextColored(vec(0xE8A13A), "Failed: %s", dlMsg_.c_str()); }
@@ -675,12 +715,15 @@ void App::drawPackCard(ImVec2 D) {
         ImGui::PopStyleColor(3);
         ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(vec(kMuted), "runs in the background; needs bcftools");
+        ImGui::TextColored(vec(kMuted), "prebuilt, checksum-verified");
     }
     ImGui::Spacing();
     ImGui::SetNextItemOpen(manualOpen_, ImGuiCond_Always);
     manualOpen_ = ImGui::TreeNodeEx("Manual install", ImGuiTreeNodeFlags_NoTreePushOnOpen);
     if (manualOpen_) {
+        ImGui::PushTextWrapPos(w - 16);
+        ImGui::TextColored(vec(kMuted), "Build it yourself instead: streams the %s dbSNP file from UCSC (about 10 minutes, needs bcftools).", kRsidPackStream);
+        ImGui::PopTextWrapPos();
         ImGui::PushFont(fonts().mono);
         ImGui::TextColored(vec(kAccent), "scripts/fetch_rsid_pack.sh");
         ImGui::PopFont();
@@ -1761,21 +1804,8 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
             ImGui::PushFont(fonts().mono);
             ImGui::TextColored(vec(kText, 0.95f), "rs%u  %s>%s", lastRs_.rs, lastRs_.ref.c_str(), lastRs_.alt.c_str());
             ImGui::PopFont();
-            if (lastRs_.dropped > 0) {
-                ImVec2 cp = ImGui::GetCursorScreenPos();
-                char t[96];
-                std::snprintf(t, sizeof t, "+%d rare allele%s in dbSNP", lastRs_.dropped, lastRs_.dropped == 1 ? "" : "s");
-                if (ImGui::InvisibleButton("##rare", ImVec2(W, ImGui::GetTextLineHeight() + 2))) rareOpen_ = !rareOpen_;
-                bool hov = ImGui::IsItemHovered();
-                unsigned cc = hov ? kAccent : 0x8A8F99;
-                ImVec2 c(cp.x + 5, cp.y + ImGui::GetTextLineHeight() * 0.5f + 1);
-                if (rareOpen_) cdl->AddTriangleFilled(ImVec2(c.x - 4, c.y - 2), ImVec2(c.x + 4, c.y - 2), ImVec2(c.x, c.y + 3), U(cc));
-                else cdl->AddTriangleFilled(ImVec2(c.x - 2, c.y - 4), ImVec2(c.x - 2, c.y + 4), ImVec2(c.x + 3, c.y), U(cc));
-                cdl->AddText(ImVec2(cp.x + 16, cp.y), U(0x8A8F99), t);
-                if (rareOpen_)
-                    ImGui::TextColored(vec(kMuted), "dbSNP 155 lists %d more ALT allele%s here that 1000 Genomes never saw "
-                                                    "(frequency 0). They are left out of the pack.", lastRs_.dropped, lastRs_.dropped == 1 ? "" : "s");
-            }
+            if (lastRs_.dropped > 0)
+                ImGui::TextColored(vec(0x8A8F99), "+%d rarer allele%s listed in dbSNP", lastRs_.dropped, lastRs_.dropped == 1 ? "" : "s");
         }
 
         // ---------- unknowns ----------
