@@ -1,5 +1,6 @@
 // ProjectWisp native explorer: SDL3 + Dear ImGui + Vulkan.
 //   wisp [--data DIR] [--region chr22:1-50000] [--pin chr22:12345] [--reduced-motion]
+//   wisp --legend (open the legend) | --intro (start the first-run intro) | --settings FILE (default ~/.config/projectwisp)
 //   wisp --shot out.png [--size 1600x1000] [--time 3.0] ...   (offscreen render, no window)
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -149,6 +150,7 @@ int main(int argc, char** argv) {
     std::string shot;
     int W = 1600, H = 1000;
     float shotTime = 2.0f;
+    bool settingsSet = false;
     float mouseX = -1, mouseY = -1;  // --mouse X,Y: simulated cursor for offscreen shots (hover/tooltips)
     for (size_t i = 0; i < args.size(); ++i) {
         std::string a = args[i];
@@ -167,6 +169,9 @@ int main(int argc, char** argv) {
         else if (a == "--expand-card") opt.expandCard = true;
         else if (a == "--expand") { std::string t = next(); if (t == "sv") opt.expandSv = true; }
         else if (a == "--reduced-motion") opt.reducedMotion = true;
+        else if (a == "--settings") { opt.settingsPath = next(); settingsSet = true; }
+        else if (a == "--legend") opt.legend = true;
+        else if (a == "--intro") opt.intro = true;
         else if (a == "--shot") shot = next();
         else if (a == "--script") next();
         else if (a == "--shots-dir") shotsDir = next();
@@ -175,12 +180,20 @@ int main(int argc, char** argv) {
         else if (a == "--size") std::sscanf(next().c_str(), "%dx%d", &W, &H);
         else if (a == "-h" || a == "--help") {
             std::printf("usage: wisp [--data DIR] [--region LOCUS] [--pin LOCUS] [--reduced-motion]\n"
+                        "            [--settings FILE] [--legend] [--intro]\n"
                         "            [--shot out.png --size WxH --time SECONDS --mouse X,Y]\n");
             return 0;
         }
     }
     const bool scripted = !scriptPath.empty();
     const bool offscreen = !shot.empty() || scripted;
+    // settings persist in the user config dir; shot/script runs stay hermetic unless --settings is given
+    if (!settingsSet && !offscreen) {
+        const char* xdg = std::getenv("XDG_CONFIG_HOME");
+        const char* home = std::getenv("HOME");
+        if (xdg && *xdg) opt.settingsPath = std::string(xdg) + "/projectwisp/settings.ini";
+        else if (home && *home) opt.settingsPath = std::string(home) + "/.config/projectwisp/settings.ini";
+    }
     if (scripted && !SDL_Init(SDL_INIT_EVENTS)) { std::fprintf(stderr, "SDL_Init(events): %s\n", SDL_GetError()); return 1; }
 
     SDL_Window* window = nullptr;

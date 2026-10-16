@@ -19,6 +19,7 @@ bool apply(const char* assetDir) {
     Fonts& f = fonts();
     f.ui = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 15.f, &cfg);
     f.uiSmall = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 11.f, &cfg);
+    f.ui13 = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 13.f, &cfg);
     f.uiBold = io.Fonts->AddFontFromFileTTF((d + "Inter-SemiBold.ttf").c_str(), 15.f, &cfg);
     f.title = io.Fonts->AddFontFromFileTTF((d + "Inter-SemiBold.ttf").c_str(), 20.f, &cfg);
     f.mono = io.Fonts->AddFontFromFileTTF((d + "JetBrainsMono-Regular.ttf").c_str(), 13.f, &cfg);
@@ -30,6 +31,8 @@ bool apply(const char* assetDir) {
         ImFont* def = io.Fonts->AddFontDefault();
         if (!f.ui) f.ui = def;
         if (!f.uiBold) f.uiBold = def;
+        if (!f.ui13) f.ui13 = def;
+        if (!f.uiSmall) f.uiSmall = def;
         if (!f.title) f.title = def;
         if (!f.mono) f.mono = def;
         if (!f.monoSmall) f.monoSmall = def;

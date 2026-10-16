@@ -8,6 +8,8 @@
 #include <map>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <functional>
 #include <set>
 
 #include "ui/theme.h"
@@ -88,6 +90,56 @@ const char* pillName(int c) {
         default: return "Nothing known";
     }
 }
+
+// ---- track drawing primitives, shared by the region view and the legend swatches ----
+constexpr unsigned kSvIns = 0x5B8DEF, kSvDel = 0xE8A13A, kSvCx = 0x8A8F99, kSvInvEdge = 0xB07CFF;
+unsigned svColor(SvType t) { return t == SvType::Ins ? kSvIns : t == SvType::Del ? kSvDel : kSvCx; }
+// SV bar: complex (grey, 1 px violet top edge when it contains an inversion) or deletion (amber); rare (AF < 1%) at 35%
+void svBar(ImDrawList* dl, SvType t, bool inv, float af, float x0, float x1, float y0, float y1, bool outline, float mul,
+           float clip0, float clip1) {
+    float a = (af >= 0.01f ? 1.f : 0.35f) * mul;
+    x0 = std::max(clip0, x0); x1 = std::min(clip1, x1);
+    if (x1 <= x0) return;
+    if (outline) dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), col(kBg), 0, 0, 1.f);
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(svColor(t), a), 1);
+    if (inv) dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y0 + 1), col(kSvInvEdge, std::max(a, 0.6f)));
+}
+// SV insertion: 2 px tick, caret above (collapsed) or small notch (expanded rows)
+void svIns(ImDrawList* dl, float x, float af, float y0, float y1, bool caret) {
+    float a = af >= 0.01f ? 1.f : 0.35f;
+    dl->AddRectFilled(ImVec2(x - 1, y0), ImVec2(x + 1, y1), col(kSvIns, a));
+    if (caret) dl->AddTriangleFilled(ImVec2(x - 4, y0 - 5), ImVec2(x + 4, y0 - 5), ImVec2(x, y0), col(kSvIns, a));
+    else dl->AddTriangleFilled(ImVec2(x - 3, y0), ImVec2(x + 3, y0), ImVec2(x, y0 + 3), col(kSvIns, a));
+}
+// small variants: accent ticks, rare (AF < 1%) dimmed to 45%
+float variantAlpha(float af) { return af >= 0.01f ? 1.f : 0.45f; }
+void variantTick(ImDrawList* dl, float x0, float x1, float y0, float y1, float af) {
+    float a = variantAlpha(af);
+    if (x1 - x0 > 2) dl->AddRectFilled(ImVec2(x0 + 1, y0), ImVec2(x1 - 1, y1), col(kAccent, a * 0.6f));
+    else dl->AddLine(ImVec2(x0 + 0.5f, y0), ImVec2(x0 + 0.5f, y1), col(kAccent, a));
+}
+// CpG methylation ramp #2A2F3A (unmethylated) -> #C9A6FF (methylated)
+constexpr unsigned kMethylLo = 0x2A2F3A, kMethylHi = 0xC9A6FF;
+ImU32 methylCol(float t) {
+    ImVec4 lo = vec(kMethylLo), hi = vec(kMethylHi);
+    t = std::clamp(t, 0.f, 1.f);
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(lo.x + (hi.x - lo.x) * t, lo.y + (hi.y - lo.y) * t, lo.z + (hi.z - lo.z) * t, 1.f));
+}
+// not-in-GRCh38 stretch: 18% purple wash + hatching
+void notInFill(ImDrawList* dl, float x0, float y0, float x1, float y1) { dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(kColNotIn, 0.18f)); }
+// gene model: intron band (4 px, centred at bandY) and exon block (10 px)
+void geneBand(ImDrawList* dl, float x0, float x1, float bandY) { dl->AddRectFilled(ImVec2(x0, bandY - 2), ImVec2(x1, bandY + 2), col(kColIntron)); }
+void strandChevron(ImDrawList* dl, float cx, float bandY, float dir) {
+    dl->AddLine(ImVec2(cx - 3 * dir, bandY - 3), ImVec2(cx + 1 * dir, bandY), col(kMuted));
+    dl->AddLine(ImVec2(cx + 1 * dir, bandY), ImVec2(cx - 3 * dir, bandY + 3), col(kMuted));
+}
+void exonBlock(ImDrawList* dl, float x0, float x1, float y0, float y1) { dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(kColKnown)); }
+// pinned position marker and hover cursor
+void pinMarker(ImDrawList* dl, float x, float top, float bot) {
+    dl->AddLine(ImVec2(x, top - 8), ImVec2(x, bot + 4), col(kAccent), 1.5f);
+    dl->AddTriangleFilled(ImVec2(x - 5, top - 12), ImVec2(x + 5, top - 12), ImVec2(x, top - 5), col(kAccent));
+}
+void hoverCursor(ImDrawList* dl, float x, float y0, float y1) { dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), col(kAccent, 0.6f)); }
 
 }  // namespace
 
@@ -172,6 +224,11 @@ bool App::init(const AppOptions& opt, std::string& err) {
         packCard_ = opt.packCard;
         if (opt.packDownload) startPackDownload();
     }
+    loadSettings();
+    if (opt.legend) legendOpen_ = true;
+    // first run: data is present (init got this far) and no settings flag yet
+    if (opt.intro) startIntro();
+    else if (!introDone_) { if (packCard_) introPending_ = true; else startIntro(); }
     if (!opt.search.empty()) {
         std::snprintf(searchBuf_, sizeof searchBuf_, "%s", opt.search.c_str());
         searchOpen_ = searchFocus_ = true;
@@ -223,7 +280,10 @@ float App::stretchAlpha(float share, float p5, float p95) const {
     return 0.1f + (0.85f - 0.1f) * t;
 }
 
-bool App::idle() const { return store_.pending() == 0 && dlState_ != 1 && !animating_ && clock_ - hlT0_ > 0.75; }  // shots catch the outline mid-fade
+bool App::idle() const {
+    bool introFading = introStep_ >= 0 && !opt_.reducedMotion && clock_ - introT0_ < 0.2;
+    return store_.pending() == 0 && dlState_ != 1 && !animating_ && clock_ - hlT0_ > 0.75 && !introFading;  // shots catch the outline mid-fade
+}  // shots catch the outline mid-fade
 
 void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
     const std::string& chrom = ov_.chroms()[ci].name;
@@ -278,27 +338,48 @@ void App::frame(FogRenderer& fog) {
         if (t >= 1.0) { s0 = animS1_; e0 = animE1_; animating_ = false; }
         setView(viewCi_, s0, e0);
     }
+    // first-run intro after the pack download finishes (once its card is closed)
+    {
+        int st = dlState_;
+        if (lastDlState_ == 1 && st == 2 && !introDone_) introPending_ = true;
+        lastDlState_ = st;
+        if (introPending_ && !packCard_) { introPending_ = false; startIntro(); }
+    }
+    const bool introOpen = introStep_ >= 0;
+    if (!introOpen && !packCard_ && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_L, false)) {
+        legendOpen_ = !legendOpen_;
+        saveSettings();
+    }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-        if (packCard_) {}  // the card closes itself
+        if (introOpen) endIntro();  // Esc skips the intro
+        else if (packCard_) {}  // the card closes itself
         else if (searchOpen_) searchOpen_ = false, ImGui::SetWindowFocus(nullptr);
         else pinned_ = {};
     }
 
     // modal open: the map gets no hover or clicks
     ImVec2 realMouse = io.MousePos;
-    if (packCard_) io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
+    if (packCard_ || introOpen) io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
     drawTopBar(dl, D.x);
     float y = drawCoverage(dl, kTopBarH, D.x);
     float leftW = D.x - kMargin * 3 - kCardW;
     ImVec2 ovA(kMargin, y), ovB(kMargin + leftW, y + kOverviewH);
     ImVec2 rgA(kMargin, ovB.y + 12), rgB(kMargin + leftW, D.y - kMargin);
     ImVec2 cdA(D.x - kMargin - kCardW, y), cdB(D.x - kMargin, D.y - kMargin);
+    const float kLegendW = 280.f, kLegendGap = 12.f;
+    ImVec2 lgA(rgB.x - kLegendW, rgA.y), lgB = rgB;
+    if (legendOpen_) rgB.x -= kLegendW + kLegendGap;  // the legend takes the right 280 px of the region view
+    ovA_ = ovA; ovB_ = ovB; rgA_ = rgA; rgB_ = rgB;
     drawOverview(dl, ovA, ovB, fog);
     drawRegion(dl, rgA, rgB, fog);
+    if (legendOpen_) drawLegend(lgA, lgB, fog);
     drawCard(dl, cdA, cdB);
-    io.MousePos = realMouse;
+    if (!introOpen) io.MousePos = realMouse;
     drawSearch(D.x);
+    drawTopButtons(D.x);
+    io.MousePos = realMouse;
     drawPackCard(D);
+    drawIntro(D);
     ImGui::End();
 }
 
@@ -350,7 +431,8 @@ void App::drawSearch(float w) {
     ImVec2 a((w - bw) * 0.5f, (kTopBarH - bh) * 0.5f);
     ImGuiIO& io = ImGui::GetIO();
     bool typing = io.WantTextInput;
-    if ((io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_K)) || (!typing && ImGui::IsKeyPressed(ImGuiKey_Slash))) searchFocus_ = true;
+    if (introStep_ < 0 && ((io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_K)) || (!typing && ImGui::IsKeyPressed(ImGuiKey_Slash)))) searchFocus_ = true;
+    searchA_ = a; searchB_ = ImVec2(a.x + bw, a.y + bh);
     ImGui::SetCursorScreenPos(a);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, (bh - ImGui::GetFontSize()) * 0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6);
@@ -1157,13 +1239,12 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             float ry = geneY + row * rowH;
             float gx0 = X(double(g->s)), gx1 = std::max(X(double(g->e)), gx0 + 1);
             float bandY = ry + 17;
-            dl->AddRectFilled(ImVec2(std::max(gx0, tx0), bandY - 2), ImVec2(std::min(gx1, tx1), bandY + 2), col(kColIntron));
+            geneBand(dl, std::max(gx0, tx0), std::min(gx1, tx1), bandY);
             // strand chevrons on the intron band
             if (gx1 - gx0 > 40) {
                 float dir = g->strand == '-' ? -1.f : 1.f;
                 for (float cx = std::max(gx0, tx0) + 20; cx < std::min(gx1, tx1) - 10; cx += 40)
-                    dl->AddLine(ImVec2(cx - 3 * dir, bandY - 3), ImVec2(cx + 1 * dir, bandY), col(kMuted)),
-                        dl->AddLine(ImVec2(cx + 1 * dir, bandY), ImVec2(cx - 3 * dir, bandY + 3), col(kMuted));
+                    strandChevron(dl, cx, bandY, dir);
             }
             double ht = clock_ - hlT0_;
             if (ht >= 0 && ht < 1.5 && g->name == hlName_ && g->s == hlS_ && ch.name == hlChrom_) {
@@ -1180,7 +1261,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 if (x->s < g->s || x->e > g->e) continue;
                 float ry = geneY + row * rowH;
                 float x0 = std::max(tx0, X(double(x->s))), x1 = std::min(tx1, std::max(X(double(x->e)), X(double(x->s)) + 1.f));
-                dl->AddRectFilled(ImVec2(x0, ry + 12), ImVec2(x1, ry + 22), col(kColKnown));
+                exonBlock(dl, x0, x1, ry + 12, ry + 22);
             }
         }
         ImGui::PopFont();
@@ -1217,13 +1298,10 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 sum[px] += m->frac;
                 ++n[px];
             }
-            ImVec4 lo = vec(0x2A2F3A), hi = vec(0xC9A6FF);
             for (int px = 0; px < cols; ++px) {
                 if (!n[px]) continue;
-                float t = std::clamp(sum[px] / n[px], 0.f, 1.f);
-                ImVec4 c(lo.x + (hi.x - lo.x) * t, lo.y + (hi.y - lo.y) * t, lo.z + (hi.z - lo.z) * t, 1.f);
                 float w = std::max(1.f, float(pxPerBp * 2));  // CpG = 2 bp
-                dl->AddRectFilled(ImVec2(tx0 + px, my0), ImVec2(std::min(tx1, tx0 + px + w), my1), ImGui::ColorConvertFloat4ToU32(c));
+                dl->AddRectFilled(ImVec2(tx0 + px, my0), ImVec2(std::min(tx1, tx0 + px + w), my1), methylCol(sum[px] / n[px]));
             }
             hint(ccreY - hdrH, "cCREs (ENCODE)  |  bottom strip: CpG methylation (CHM13 nanopore), dark = low, violet = high");
         }
@@ -1245,7 +1323,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         ImGui::PopFont();
         for (auto* u : vis.notin) {
             float x0 = std::max(tx0, X(double(u->s))), x1 = std::min(tx1, X(double(u->e)));
-            dl->AddRectFilled(ImVec2(x0, niY), ImVec2(x1, niY + niH), col(kColNotIn, 0.18f));
+            notInFill(dl, x0, niY, x1, niY + niH);
             hatches.push_back({x0, niY, x1, niY + niH});
         }
     } else {
@@ -1291,16 +1369,13 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         if (!dense && pxPerBp >= 1) {
             for (auto* v : vis.variants) {
                 float x0 = X(double(v->s)), x1 = std::max(X(double(v->e)), x0 + 1.f);
-                float a = v->af >= 0.01f ? 1.f : 0.45f;
-                if (x1 - x0 > 2) dl->AddRectFilled(ImVec2(x0 + 1, varY), ImVec2(x1 - 1, varY + varH), col(kAccent, a * 0.6f));
-                else dl->AddLine(ImVec2(x0 + 0.5f, varY), ImVec2(x0 + 0.5f, varY + varH), col(kAccent, a));
+                variantTick(dl, x0, x1, varY, varY + varH, v->af);
             }
         } else {
             for (int p = 0; p < cols; ++p) {
                 if (!cnt[p]) continue;
                 float hgt = varH * (0.25f + 0.75f * float(cnt[p]) / float(mx));
-                float a = maxAf[p] >= 0.01f ? 1.f : 0.45f;
-                dl->AddRectFilled(ImVec2(tx0 + p, varY + varH - hgt), ImVec2(tx0 + p + 1, varY + varH), col(kAccent, a));
+                dl->AddRectFilled(ImVec2(tx0 + p, varY + varH - hgt), ImVec2(tx0 + p + 1, varY + varH), col(kAccent, variantAlpha(maxAf[p])));
             }
         }
     }
@@ -1330,27 +1405,17 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     } else {
         int nIns = 0, nDel = 0, nCx = 0;
         for (auto* g : vis.svGroups) { nIns += g->type == SvType::Ins; nDel += g->type == SvType::Del; nCx += g->type != SvType::Ins && g->type != SvType::Del; }
-        auto svColor = [](SvType t) -> unsigned { return t == SvType::Ins ? 0x5B8DEF : t == SvType::Del ? 0xE8A13A : 0x8A8F99; };
         auto extentOf = [&](int64_t s0, int64_t e0, SvType t, float& x0, float& x1) {
             if (t == SvType::Ins) { float x = X(double(s0) + 1.0); x0 = x - 3; x1 = x + 3; }
             else { x0 = X(double(s0)); x1 = std::max(X(double(e0)), x0 + 2.f); }
         };
-        // bar: complex (grey, 1 px violet top edge when it contains an inversion) or deletion (amber)
         auto drawBar = [&](SvType t, bool inv, float af, float x0, float x1, float y0, float y1, bool outline, float mul = 1.f) {
-            float a = (af >= 0.01f ? 1.f : 0.35f) * mul;
-            x0 = std::max(tx0, x0); x1 = std::min(tx1, x1);
-            if (x1 <= x0) return;
-            if (outline) dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), col(kBg), 0, 0, 1.f);
-            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(svColor(t), a), 1);
-            if (inv) dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y0 + 1), col(0xB07CFF, std::max(a, 0.6f)));
+            svBar(dl, t, inv, af, x0, x1, y0, y1, outline, mul, tx0, tx1);
         };
         auto drawIns = [&](int64_t s0, float af, float y0, float y1, bool caret) {
-            float a = af >= 0.01f ? 1.f : 0.35f;
             float x = X(double(s0) + 1.0);
             if (x < tx0 || x > tx1) return;
-            dl->AddRectFilled(ImVec2(x - 1, y0), ImVec2(x + 1, y1), col(0x5B8DEF, a));
-            if (caret) dl->AddTriangleFilled(ImVec2(x - 4, y0 - 5), ImVec2(x + 4, y0 - 5), ImVec2(x, y0), col(0x5B8DEF, a));
-            else dl->AddTriangleFilled(ImVec2(x - 3, y0), ImVec2(x + 3, y0), ImVec2(x, y0 + 3), col(0x5B8DEF, a));
+            svIns(dl, x, af, y0, y1, caret);
         };
         auto groupAf = [](const SvGroup* g) { return g->an > 0 ? float(g->ac) / float(g->an) : -1.f; };
         if (!svExpanded_) {
@@ -1388,7 +1453,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             }
             for (auto& e : invEdges) {  // final pass: "contains an inversion" edge on top of everything
                 float a0 = std::max(tx0, e.first), a1 = std::min(tx1, e.second);
-                if (a1 > a0) dl->AddRectFilled(ImVec2(a0, svY + 5), ImVec2(a1, svY + 6), col(0xB07CFF));
+                if (a1 > a0) dl->AddRectFilled(ImVec2(a0, svY + 5), ImVec2(a1, svY + 6), col(kSvInvEdge));
             }
             svRowsLast_ = 1;
         } else {
@@ -1478,7 +1543,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             setView(viewCi_, ns, ne);
         }
         float x = io.MousePos.x;
-        dl->AddLine(ImVec2(x, tracksTop - 6), ImVec2(x, tracksBottom + 4), col(kAccent, 0.6f));
+        hoverCursor(dl, x, tracksTop - 6, tracksBottom + 4);
     }
     if (!uiClaim && ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.f)) {
         double d = -io.MouseDelta.x * bpPerPx;
@@ -1493,8 +1558,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     }
     if (pinned_.valid && !pinned_.overview && pinned_.ci == viewCi_ && pinned_.pos >= viewS_ && pinned_.pos <= viewE_) {
         float x = X(double(pinned_.pos) + 0.5);
-        dl->AddLine(ImVec2(x, tracksTop - 8), ImVec2(x, tracksBottom + 4), col(kAccent), 1.5f);
-        dl->AddTriangleFilled(ImVec2(x - 5, tracksTop - 12), ImVec2(x + 5, tracksTop - 12), ImVec2(x, tracksTop - 5), col(kAccent));
+        pinMarker(dl, x, tracksTop, tracksBottom);
     }
 }
 
@@ -1876,6 +1940,317 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
     ImGui::PopTextWrapPos();
     ImGui::PopStyleVar(2);
     ImGui::EndChild();
+}
+
+// ---------------- settings (key=value, one per line) ----------------
+void App::loadSettings() {
+    if (opt_.settingsPath.empty()) { introDone_ = true; return; }  // hermetic (shots/scripts): no first-run intro unless --intro
+    std::ifstream f(opt_.settingsPath);
+    std::string line;
+    while (std::getline(f, line)) {
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        if (k == "legend") legendOpen_ = v == "1";
+        else if (k == "intro_done") introDone_ = v == "1";
+    }
+}
+
+void App::saveSettings() const {
+    if (opt_.settingsPath.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(opt_.settingsPath).parent_path(), ec);
+    std::ofstream f(opt_.settingsPath, std::ios::trunc);
+    f << "legend=" << (legendOpen_ ? 1 : 0) << "\n" << "intro_done=" << (introDone_ ? 1 : 0) << "\n";
+}
+
+// ---------------- top bar: Legend toggle + settings menu, right of the search box ----------------
+void App::drawTopButtons(float w) {
+    const float bh = 32, y = (kTopBarH - bh) * 0.5f;
+    float x = (w + 320) * 0.5f + 8;  // search box is 320 px, centred
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGui::PushFont(fonts().ui);
+    const char* lbl = "Legend";
+    ImVec2 ts = ImGui::CalcTextSize(lbl);
+    ImGui::PushFont(fonts().monoSmall);
+    ImVec2 ks = ImGui::CalcTextSize("L");
+    ImGui::PopFont();
+    float bw = 12 + ts.x + 8 + ks.x + 8 + 10;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    if (ImGui::InvisibleButton("##legendtoggle", ImVec2(bw, bh))) { legendOpen_ = !legendOpen_; saveSettings(); }
+    bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + bh), col(act ? 0x2D3340 : hov ? kHover : kPanel), 6);
+    dl->AddRect(ImVec2(x, y), ImVec2(x + bw, y + bh), col(legendOpen_ ? kAccent : kBorder), 6, 0, 1.f);
+    dl->AddText(ImVec2(x + 12, y + (bh - ts.y) * 0.5f), col(legendOpen_ ? kAccent : kText), lbl);
+    ImGui::PopFont();
+    {  // key hint chip
+        float kx = x + 12 + ts.x + 8;
+        ImVec2 k0(kx, y + 8), k1(kx + ks.x + 8, y + bh - 8);
+        dl->AddRect(k0, k1, col(kBorder), 3);
+        ImGui::PushFont(fonts().monoSmall);
+        dl->AddText(ImVec2(kx + 4, k0.y + (k1.y - k0.y - ks.y) * 0.5f), col(kMuted), "L");
+        ImGui::PopFont();
+    }
+    // settings menu (three dots)
+    float sx = x + bw + 6;
+    ImGui::SetCursorScreenPos(ImVec2(sx, y));
+    if (ImGui::InvisibleButton("##settings", ImVec2(bh, bh))) ImGui::OpenPopup("##settingsmenu");
+    hov = ImGui::IsItemHovered();
+    dl->AddRectFilled(ImVec2(sx, y), ImVec2(sx + bh, y + bh), col(hov ? kHover : kPanel), 6);
+    dl->AddRect(ImVec2(sx, y), ImVec2(sx + bh, y + bh), col(kBorder), 6, 0, 1.f);
+    for (int i = -1; i <= 1; ++i) dl->AddCircleFilled(ImVec2(sx + bh * 0.5f + i * 5.f, y + bh * 0.5f), 1.6f, col(kMuted));
+    ImGui::SetNextWindowPos(ImVec2(sx, y + bh + 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
+    if (ImGui::BeginPopup("##settingsmenu")) {
+        ImGui::PushFont(fonts().monoSmall);
+        ImGui::TextColored(vec(kMuted), "SETTINGS");
+        ImGui::PopFont();
+        if (ImGui::MenuItem("Legend", "L", legendOpen_)) { legendOpen_ = !legendOpen_; saveSettings(); }
+        if (ImGui::MenuItem("Show intro again")) startIntro();
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+}
+
+// ---------------- legend panel ----------------
+void App::drawLegend(ImVec2 A, ImVec2 B, FogRenderer& fog) {
+    ImDrawList* rdl = ImGui::GetWindowDrawList();
+    rdl->AddRectFilled(A, B, col(kPanel), 8);  // #171A21
+    rdl->AddRect(A, B, col(kBorder), 8);
+    ImGui::SetCursorScreenPos(A);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 12));
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 6);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, vec(kPanel, 0.f));
+    ImGui::BeginChild("##legend", ImVec2(B.x - A.x, B.y - A.y), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoBackground);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float x0 = ImGui::GetCursorScreenPos().x;
+    ImGui::PushFont(fonts().uiBold);
+    ImGui::TextColored(vec(kText), "Legend");
+    ImGui::PopFont();
+    ImGui::SameLine();
+    ImGui::PushFont(fonts().monoSmall);
+    ImGui::SetCursorPosX(B.x - A.x - 12 - ImGui::CalcTextSize("L to close").x);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(vec(kMuted), "L to close");
+    ImGui::PopFont();
+
+    using Swatch = std::function<void(ImDrawList*, float, float, float, float)>;  // x0, y0, x1, y1 of the 16x10 box
+    auto group = [&](const char* name) {
+        ImGui::Dummy(ImVec2(1, 4));
+        ImGui::PushFont(fonts().monoSmall);
+        ImGui::TextColored(vec(0x6B7280), "%s", name);
+        ImGui::PopFont();
+    };
+    auto row = [&](const char* label, const char* meaning, const Swatch& sw) {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::PushFont(fonts().ui13);
+        float lh = ImGui::GetTextLineHeight();
+        float sy = p.y + (lh - 10) * 0.5f;
+        dl->PushClipRect(ImVec2(x0, sy - 6), ImVec2(x0 + 16, sy + 10), true);  // carets may poke above the box
+        sw(dl, x0, sy, x0 + 16, sy + 10);
+        dl->PopClipRect();
+        dl->AddText(ImVec2(x0 + 24, p.y), col(kText), label);
+        ImGui::PopFont();
+        ImGui::PushFont(fonts().uiSmall);
+        dl->AddText(ImVec2(x0 + 24, p.y + lh + 1), col(0x8A8F99), meaning);
+        float mh = ImGui::GetTextLineHeight();
+        ImGui::PopFont();
+        ImGui::Dummy(ImVec2(B.x - A.x - 24, lh + 1 + mh + 4));
+    };
+    auto solid = [](unsigned c) { return [c](ImDrawList* d, float a, float b, float x1, float y1) { d->AddRectFilled(ImVec2(a, b), ImVec2(x1, y1), col(c)); }; };
+    auto fogSw = [&](float alpha, float edge, unsigned under) {
+        return [&fog, alpha, edge, under](ImDrawList* d, float a, float b, float x1, float y1) {
+            if (under) d->AddRectFilled(ImVec2(a, b), ImVec2(x1, y1), col(under));
+            fog.draw(d, {FogRect{a, b, x1, y1, alpha, edge, edge}}, 24.f);
+        };
+    };
+
+    group("COVERAGE");  // category strip colours (catColor) + nothing-known fog
+    row("Exon", "Gene exons: known function", solid(catColor(kExon)));
+    row("Regulatory (cCRE)", "ENCODE candidate regulatory element", solid(catColor(kCcre)));
+    row("Intron", "Inside a gene, spliced out of the RNA", solid(catColor(kIntron)));
+    row("Repeat", "Known repeat family, function unclear", solid(catColor(kRepeat)));
+    row("Nothing known", "No annotation; drifting fog marks it", fogSw(0.55f, 3.f, catColor(kNothing)));
+
+    group("GENES");
+    row("Gene model", "Exons as blocks on the intron line", [](ImDrawList* d, float a, float b, float x1, float y1) {
+        geneBand(d, a, x1, b + 5);
+        exonBlock(d, a + 3, a + 8, b, y1);
+    });
+    row("Strand", "Chevrons point the way it is read", [](ImDrawList* d, float a, float b, float x1, float) {
+        geneBand(d, a, x1, b + 5);
+        strandChevron(d, a + 9, b + 5, 1.f);
+    });
+    row("Search match", "Outline fades out after a jump", [](ImDrawList* d, float a, float b, float x1, float y1) {
+        geneBand(d, a + 2, x1 - 2, b + 5);
+        d->AddRect(ImVec2(a + 0.5f, b + 0.5f), ImVec2(x1 - 0.5f, y1 - 0.5f), col(kAccent), 2, 0, 1.5f);
+    });
+
+    group("REGULATORY");
+    row("cCRE", "Regulatory element (ENCODE)", solid(kColCcre));
+
+    group("REPEATS");
+    row("Repeat", "RepeatMasker element", solid(kColRepeat));
+
+    if (store_.hasVariants()) {
+        group("VARIANTS");
+        row("Common variant", "Allele frequency 1% or more (1KGP)", [](ImDrawList* d, float a, float b, float, float y1) {
+            for (int i = 0; i < 4; ++i) variantTick(d, a + 2 + i * 4, a + 3 + i * 4, b, y1, 0.2f);
+        });
+        row("Rare variant", "Under 1%, drawn dimmer", [](ImDrawList* d, float a, float b, float, float y1) {
+            for (int i = 0; i < 4; ++i) variantTick(d, a + 2 + i * 4, a + 3 + i * 4, b, y1, 0.001f);
+        });
+        row("Density", "Zoomed out: bar height = count", [](ImDrawList* d, float a, float b, float, float y1) {
+            const float h[8] = {3, 7, 10, 5, 2, 8, 4, 6};
+            for (int i = 0; i < 8; ++i)
+                d->AddRectFilled(ImVec2(a + i * 2, y1 - h[i]), ImVec2(a + i * 2 + 1, y1), col(kAccent, variantAlpha(i % 3 ? 0.2f : 0.001f)));
+        });
+    }
+    if (store_.hasSv()) {
+        group("SVS");
+        row("Insertion", "Sequence added at this point", [](ImDrawList* d, float a, float b, float, float y1) { svIns(d, a + 8, 0.2f, b + 3, y1, false); });
+        row("Deletion", "Sequence missing in some genomes", [](ImDrawList* d, float a, float b, float x1, float y1) {
+            svBar(d, SvType::Del, false, 0.2f, a, x1, b + 1, y1 - 1, false, 1.f, a, x1);
+        });
+        row("Complex", "Rearranged, several changes at once", [](ImDrawList* d, float a, float b, float x1, float y1) {
+            svBar(d, SvType::Complex, false, 0.2f, a, x1, b + 1, y1 - 1, false, 1.f, a, x1);
+        });
+        row("Contains an inversion", "Violet top edge on a complex SV", [](ImDrawList* d, float a, float b, float x1, float y1) {
+            svBar(d, SvType::Complex, true, 0.2f, a, x1, b + 1, y1 - 1, false, 1.f, a, x1);
+            d->AddRectFilled(ImVec2(a, b + 1), ImVec2(x1, b + 2), col(kSvInvEdge));
+        });
+        row("Rare SV", "Allele frequency under 1%, faded", [](ImDrawList* d, float a, float b, float x1, float y1) {
+            svBar(d, SvType::Del, false, 0.001f, a, a + 9, b + 1, y1 - 1, false, 1.f, a, x1);
+            svIns(d, a + 13, 0.001f, b + 1, y1, false);
+        });
+    }
+    if (store_.hasMethyl()) {
+        group("METHYLATION");
+        row("CpG methylation", "Dark = unmethylated, violet = methylated", [](ImDrawList* d, float a, float b, float, float y1) {
+            for (int i = 0; i < 16; ++i) d->AddRectFilled(ImVec2(a + i, b), ImVec2(a + i + 1, y1), methylCol(i / 15.f));
+        });
+    }
+
+    group("OVERLAYS");
+    row("Not in GRCh38", "New in T2T; most annotations miss it", [](ImDrawList* d, float a, float b, float x1, float y1) {
+        notInFill(d, a, b, x1, y1);
+        hatch(d, a, b, x1, y1);
+    });
+    row("Loading", "Fog while a track is still loading", fogSw(0.40f, 3.f, kHover));
+    row("Hover", "Position under the cursor", [](ImDrawList* d, float a, float b, float, float y1) { hoverCursor(d, a + 8, b, y1); });
+    row("Pinned", "Position whose card is pinned", [](ImDrawList* d, float a, float b, float, float y1) { pinMarker(d, a + 8, b + 12, y1 - 4); });
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+}
+
+// ---------------- first-run intro ----------------
+void App::startIntro() {
+    introStep_ = 0;
+    introT0_ = clock_;
+    searchOpen_ = false;
+}
+
+void App::endIntro() {
+    introStep_ = -1;
+    introDone_ = true;
+    saveSettings();
+}
+
+void App::drawIntro(ImVec2 D) {
+    if (introStep_ < 0) return;
+    struct Step { ImVec2 a, b; const char* title; const char* body; bool above; };
+    const Step steps[3] = {
+        {ovA_, ovB_, "Overview", "Each strip is one chromosome. Brighter means more is known there.", false},
+        {rgA_, rgB_, "Region view", "Scroll to zoom, drag to pan. Click anything to pin its card.", true},
+        {searchA_, searchB_, "Search", "Search a gene like COMT, or a position.", false},
+    };
+    const Step& st = steps[introStep_];
+    const float fade = opt_.reducedMotion ? 1.f : float(std::clamp((clock_ - introT0_) / 0.15, 0.0, 1.0));
+    ImDrawList* dl = ImGui::GetWindowDrawList();  // root window: under the card window
+    ImVec2 r0(st.a.x - 4, st.a.y - 4), r1(st.b.x + 4, st.b.y + 4);  // ring sits 4 px outside the target
+    const ImU32 scrim = col(kBg, 0.50f);
+    dl->AddRectFilled(ImVec2(0, 0), ImVec2(D.x, r0.y), scrim);
+    dl->AddRectFilled(ImVec2(0, r1.y), D, scrim);
+    dl->AddRectFilled(ImVec2(0, r0.y), ImVec2(r0.x, r1.y), scrim);
+    dl->AddRectFilled(ImVec2(r1.x, r0.y), ImVec2(D.x, r1.y), scrim);
+    dl->AddRect(r0, r1, col(kAccent, fade), 8, 0, 2.f);
+
+    const float cw = 360, arrow = 12;
+    float cx = std::clamp((r0.x + r1.x) * 0.5f - cw * 0.5f, kMargin, D.x - kMargin - cw);
+    float cy = st.above ? r0.y - arrow - introCardH_ : r1.y + arrow;
+    float ax = std::clamp((r0.x + r1.x) * 0.5f, cx + 24, cx + cw - 24);
+    ImGui::SetNextWindowPos(ImVec2(cx, cy));
+    ImGui::SetNextWindowSize(ImVec2(cw, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, vec(kPanel));
+    ImGui::PushStyleColor(ImGuiCol_Border, vec(kBorder));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 16));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
+    ImGui::SetNextWindowFocus();
+    ImGui::Begin("##intro", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                         ImGuiWindowFlags_AlwaysAutoResize);
+    ImDrawList* wdl = ImGui::GetWindowDrawList();
+    {  // 12 px arrow from the card edge to the target
+        wdl->PushClipRectFullScreen();
+        ImU32 fill = col(kPanel, fade), edge = col(kBorder, fade);
+        if (st.above) {
+            float by = cy + introCardH_ - 1;
+            wdl->AddTriangleFilled(ImVec2(ax - 10, by), ImVec2(ax + 10, by), ImVec2(ax, by + arrow), fill);
+            wdl->AddLine(ImVec2(ax - 10, by), ImVec2(ax, by + arrow), edge);
+            wdl->AddLine(ImVec2(ax, by + arrow), ImVec2(ax + 10, by), edge);
+        } else {
+            float by = cy + 1;
+            wdl->AddTriangleFilled(ImVec2(ax - 10, by), ImVec2(ax, by - arrow), ImVec2(ax + 10, by), fill);
+            wdl->AddLine(ImVec2(ax - 10, by), ImVec2(ax, by - arrow), edge);
+            wdl->AddLine(ImVec2(ax, by - arrow), ImVec2(ax + 10, by), edge);
+        }
+        wdl->PopClipRect();
+    }
+    ImGui::PushFont(fonts().monoSmall);
+    ImGui::TextColored(vec(kMuted), "STEP %d OF 3", introStep_ + 1);
+    ImGui::PopFont();
+    ImGui::PushFont(fonts().uiBold);
+    ImGui::TextColored(vec(kText), "%s", st.title);
+    ImGui::PopFont();
+    ImGui::PushTextWrapPos(cw - 16);
+    ImGui::TextColored(vec(kText, 0.85f), "%s", st.body);
+    ImGui::PopTextWrapPos();
+    ImGui::Dummy(ImVec2(1, 6));
+    bool next = false, skip = false;
+    const bool last = introStep_ == 2;
+    if (!last) {
+        if (ImGui::Button("Skip", ImVec2(80, 30))) skip = true;
+        ImGui::SameLine(cw - 32 - 100);
+    } else {
+        ImGui::SetCursorPosX(cw - 16 - 100);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Button, vec(kAccent));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, vec(0x9AD3FF));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, vec(0x9AD3FF));
+    ImGui::PushStyleColor(ImGuiCol_Text, vec(kBg));
+    if (ImGui::Button(last ? "Done" : "Next", ImVec2(100, 30))) next = true;
+    ImGui::PopStyleColor(4);
+    {  // step dots
+        ImGui::Dummy(ImVec2(1, 4));
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float mid = cx + cw * 0.5f;
+        for (int i = 0; i < 3; ++i)
+            wdl->AddCircleFilled(ImVec2(mid + (i - 1) * 14.f, p.y + 3), 3.f, col(i == introStep_ ? kAccent : kBorder, fade));
+        ImGui::Dummy(ImVec2(1, 6));
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, false)) next = true;
+    introCardH_ = ImGui::GetWindowHeight();
+    ImGui::End();
+    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor(2);
+    if (skip) endIntro();
+    else if (next) {
+        if (last) endIntro();
+        else { ++introStep_; introT0_ = clock_; }  // reducedMotion: fade is 1 immediately (no fade between steps)
+    }
 }
 
 }  // namespace wisp
