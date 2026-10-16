@@ -420,7 +420,16 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         if (parseLocus(gotoBuf_, ci, s, e)) setView(ci, s, e);
     }
 
-    float y = A.y + 40;
+    // track heights (genes 48, cCRE 24, repeats 24); each track has a 14px header line for hints
+    const float hdrH = 14, geneTrackH = 48, ccreH = 24, repH = 24, niH = 14;
+    const float stackH = 26 + (10 + 8) + (hdrH + 20 + 6) + (hdrH + geneTrackH + 6) + (hdrH + ccreH + 6) + (hdrH + repH + 6) + niH;
+    const float availTop = A.y + 40, availBot = B.y - 30;
+    float y = availTop + std::max(0.f, (availBot - availTop - stackH) * 0.5f);
+    auto hint = [&](float hy, const char* t) {
+        ImGui::PushFont(fonts().monoSmall);
+        dl->AddText(ImVec2(tx0, hy + 1), col(kMuted), t);
+        ImGui::PopFont();
+    };
     // ruler
     {
         double raw = span / 8.0, p10 = std::pow(10.0, std::floor(std::log10(raw)));
@@ -454,11 +463,13 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // lanes
     const float catY = y, catH = 10;
     y += catH + 8;
-    const float seqY = y, seqH = 20;
-    y += seqH + 6;
-    const float geneY = y;
-    const float rowH = 30;
-    const int maxRows = 5;
+    const float seqHdrY = y;
+    const float seqY = y + hdrH, seqH = 20;
+    y = seqY + seqH + 6;
+    const float geneHdrY = y;
+    const float geneY = y + hdrH;
+    const float rowH = geneTrackH / 2;
+    const int maxRows = 2;
 
     Visible vis;
     if (detailed) {
@@ -528,18 +539,18 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         }
         ImGui::PopFont();
     } else {
-        dl->AddText(ImVec2(tx0, seqY + 2), col(kMuted, 0.7f), "zoom below 20 kb to see bases");
+        hint(seqHdrY, "zoom below 20 kb to see bases");
     }
 
     // genes
-    float geneH = rowH;
+    const float geneH = geneTrackH;
     if (detailed) {
         std::vector<const Gene*> genes = vis.genes;
         std::sort(genes.begin(), genes.end(), [](auto* a, auto* b) { return a->s < b->s; });
         std::vector<float> rowEnd;
         std::map<std::string, std::vector<std::pair<int, const Gene*>>> byName;
         std::vector<std::pair<int, const Gene*>> placed;
-        ImGui::PushFont(fonts().mono);
+        ImGui::PushFont(fonts().monoSmall);
         for (auto* g : genes) {
             float gx0 = std::max(tx0, X(double(g->s))), gx1 = std::min(tx1, X(double(g->e)));
             float lw2 = ImGui::CalcTextSize(g->name.c_str()).x;
@@ -554,11 +565,11 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             byName[g->name].push_back({row, g});
         }
         int rows = std::max(1, int(rowEnd.size()));
-        geneH = rows * rowH;
+        (void)rows;
         for (auto& [row, g] : placed) {
             float ry = geneY + row * rowH;
             float gx0 = X(double(g->s)), gx1 = std::max(X(double(g->e)), gx0 + 1);
-            float bandY = ry + 20;
+            float bandY = ry + 17;
             dl->AddRectFilled(ImVec2(std::max(gx0, tx0), bandY - 2), ImVec2(std::min(gx1, tx1), bandY + 2), col(kColIntron));
             // strand chevrons on the intron band
             if (gx1 - gx0 > 40) {
@@ -577,11 +588,11 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 if (x->s < g->s || x->e > g->e) continue;
                 float ry = geneY + row * rowH;
                 float x0 = std::max(tx0, X(double(x->s))), x1 = std::min(tx1, std::max(X(double(x->e)), X(double(x->s)) + 1.f));
-                dl->AddRectFilled(ImVec2(x0, ry + 14), ImVec2(x1, ry + 26), col(kColKnown));
+                dl->AddRectFilled(ImVec2(x0, ry + 12), ImVec2(x1, ry + 22), col(kColKnown));
             }
         }
         ImGui::PopFont();
-        if (genes.empty() && !vis.loading[0]) dl->AddText(ImVec2(tx0, geneY + 8), col(kMuted, 0.7f), "no genes here");
+        if (genes.empty() && !vis.loading[0]) hint(geneHdrY, "no genes here");
     } else {
         for (int p = 0; p < cols; ++p) {
             float f[kCatCount];
@@ -590,34 +601,33 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             if (gb > 0.02f) dl->AddRectFilled(ImVec2(tx0 + p, geneY + 16), ImVec2(tx0 + p + 1, geneY + 24), col(kColIntron, gb));
             if (f[kExon] > 0.002f) dl->AddRectFilled(ImVec2(tx0 + p, geneY + 12), ImVec2(tx0 + p + 1, geneY + 28), col(kColKnown, std::min(1.f, 0.25f + f[kExon] * 8)));
         }
-        dl->AddText(ImVec2(tx0, geneY - 2), col(kMuted, 0.8f), "density from 100 kb summary - zoom below 3 Mb for features");
+        hint(geneHdrY, "density from 100 kb summary - zoom below 3 Mb for features");
     }
-    laneLabel(geneY, std::min(geneH, rowH), "Genes");
+    laneLabel(geneY, rowH, "Genes");
     y = geneY + geneH + 6;
 
     // cCREs, repeats, not-in-GRCh38
-    const float laneH = 14;
-    const float ccreY = y, repY = y + laneH + 8, niY = y + 2 * (laneH + 8);
-    laneLabel(ccreY, laneH, "cCREs");
-    laneLabel(repY, laneH, "Repeats");
-    laneLabel(niY, laneH, "Not in GRCh38");
+    const float ccreY = y + hdrH, repY = ccreY + ccreH + 6 + hdrH, niY = repY + repH + 6;
+    laneLabel(ccreY, ccreH, "Regulatory");
+    laneLabel(repY, repH, "Repeats");
+    laneLabel(niY, niH, "Not in GRCh38");
     if (detailed) {
         ImGui::PushFont(fonts().mono);
         for (auto* c : vis.ccres) {
             float x0 = std::max(tx0, X(double(c->s))), x1 = std::min(tx1, std::max(X(double(c->e)), x0 + 1));
-            dl->AddRectFilled(ImVec2(x0, ccreY), ImVec2(x1, ccreY + laneH), col(kColCcre));
+            dl->AddRectFilled(ImVec2(x0, ccreY), ImVec2(x1, ccreY + ccreH), col(kColCcre));
         }
         for (auto* r : vis.repeats) {
             float x0 = std::max(tx0, X(double(r->s))), x1 = std::min(tx1, std::max(X(double(r->e)), x0 + 1));
-            dl->AddRectFilled(ImVec2(x0, repY), ImVec2(x1, repY + laneH), col(kColRepeat));
+            dl->AddRectFilled(ImVec2(x0, repY), ImVec2(x1, repY + repH), col(kColRepeat));
             if (x1 - x0 > ImGui::CalcTextSize(r->name.c_str()).x + 6)
                 dl->AddText(ImVec2(x0 + 3, repY), col(kBg), r->name.c_str());
         }
         ImGui::PopFont();
         for (auto* u : vis.notin) {
             float x0 = std::max(tx0, X(double(u->s))), x1 = std::min(tx1, X(double(u->e)));
-            dl->AddRectFilled(ImVec2(x0, niY), ImVec2(x1, niY + laneH), col(kColNotIn, 0.18f));
-            hatches.push_back({x0, niY, x1, niY + laneH});
+            dl->AddRectFilled(ImVec2(x0, niY), ImVec2(x1, niY + niH), col(kColNotIn, 0.18f));
+            hatches.push_back({x0, niY, x1, niY + niH});
         }
     } else {
         int hs = -1;
@@ -625,15 +635,15 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             float f[kCatCount] = {};
             if (p < cols) ov_.average(viewCi_, viewS_ + p * bpPerPx, viewS_ + (p + 1) * bpPerPx, f);
             if (p < cols) {
-                if (f[kCcre] > 0.002f) dl->AddRectFilled(ImVec2(tx0 + p, ccreY), ImVec2(tx0 + p + 1, ccreY + laneH), col(kColCcre, std::min(1.f, f[kCcre] * 6)));
-                if (f[kRepeat] > 0.01f) dl->AddRectFilled(ImVec2(tx0 + p, repY), ImVec2(tx0 + p + 1, repY + laneH), col(kColRepeat, std::min(1.f, f[kRepeat] * 1.3f)));
+                if (f[kCcre] > 0.002f) dl->AddRectFilled(ImVec2(tx0 + p, ccreY), ImVec2(tx0 + p + 1, ccreY + ccreH), col(kColCcre, std::min(1.f, f[kCcre] * 6)));
+                if (f[kRepeat] > 0.01f) dl->AddRectFilled(ImVec2(tx0 + p, repY), ImVec2(tx0 + p + 1, repY + repH), col(kColRepeat, std::min(1.f, f[kRepeat] * 1.3f)));
             }
             bool ni = p < cols && f[kNotIn] > 0.5f;
             if (ni && hs < 0) hs = p;
-            if (!ni && hs >= 0) { hatches.push_back({tx0 + hs, niY, tx0 + p, niY + laneH}); hs = -1; }
+            if (!ni && hs >= 0) { hatches.push_back({tx0 + hs, niY, tx0 + p, niY + niH}); hs = -1; }
         }
     }
-    const float tracksBottom = niY + laneH;
+    const float tracksBottom = niY + niH;
 
     // fog over 'nothing known' columns, spanning all lanes
     for (int p = 0; p < cols;) {
@@ -649,9 +659,9 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     };
     if (detailed) {
         loadingFog(vis.loading[0], geneY, geneH);
-        loadingFog(vis.loading[1], ccreY, laneH);
-        loadingFog(vis.loading[2], repY, laneH);
-        loadingFog(vis.loading[3], niY, laneH);
+        loadingFog(vis.loading[1], ccreY, ccreH);
+        loadingFog(vis.loading[2], repY, repH);
+        loadingFog(vis.loading[3], niY, niH);
         loadingFog(vis.loading[0] || vis.loading[1] || vis.loading[2], catY, catH);
     }
     dl->PushClipRect(ImVec2(tx0, A.y), ImVec2(tx1, B.y), true);
