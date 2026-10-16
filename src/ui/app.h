@@ -16,7 +16,8 @@ namespace wisp {
 struct AppOptions {
     std::string dataDir = "data";
     std::string region;  // "chr22:30,000,000-30,050,000" or "chr22"
-    std::string pin;     // "chr22:30012345" pins the lookup card
+    std::string pin;     // "chr22:12345" pins the lookup card
+    std::string variants;  // bgzipped+tabixed VCF; default: first *.vcf.gz with .tbi in dataDir
     bool reducedMotion = false;
 };
 
@@ -41,7 +42,8 @@ private:
         std::vector<const Ccre*> ccres;
         std::vector<const Repeat*> repeats;
         std::vector<const Interval*> notin;
-        bool loading[4] = {};
+        std::vector<const Variant*> variants;
+        bool loading[kTrackCount] = {};
         std::vector<TilePtr> hold;
     };
     void gather(int ci, int64_t s, int64_t e, Visible& v);

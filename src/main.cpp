@@ -40,6 +40,7 @@ int main(int argc, char** argv) {
         if (a == "--data") opt.dataDir = next();
         else if (a == "--region") opt.region = next();
         else if (a == "--pin") opt.pin = next();
+        else if (a == "--variants") opt.variants = next();
         else if (a == "--reduced-motion") opt.reducedMotion = true;
         else if (a == "--shot") shot = next();
         else if (a == "--time") shotTime = std::strtof(next().c_str(), nullptr);

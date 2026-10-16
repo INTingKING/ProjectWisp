@@ -53,6 +53,8 @@ No GPU? `mesa-vulkan-drivers` provides lavapipe (CPU Vulkan); it is enough for b
 # offscreen screenshot, no window or display needed (renders into a Vulkan image, writes PNG):
 ./build/wisp --shot out.png --size 1600x1000 --region chr22:20,339,821-20,339,940 --time 2
 ```
+Variants: the first `*.vcf.gz` with a `.tbi` in `data/` (here the 1KGP CHM13 chr22 sites file from `fetch_data.sh`, override with `--variants FILE`) is read directly through tabix in the same 1 Mb blocks, drawn as 1 px ticks or per-pixel density bars (brighter = AF >= 1%).
+
 Interaction: click a chromosome in the overview (or drag across it) to open it; mouse wheel zooms, drag pans, click pins the lookup card; the box at the top right of the region view accepts a locus. Above 3 Mb the region view draws densities from the summary; below 3 Mb features load from tabix in 1 Mb tiles (LRU cache, ~100 MB cap); below 20 kb the sequence lane appears, with A/C/G/T letters once a base is at least 8 px wide.
 
 ## Data

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <filesystem>
 #include <set>
 
 #include "ui/theme.h"
@@ -93,7 +94,20 @@ bool App::init(const AppOptions& opt, std::string& err) {
     opt_ = opt;
     std::string tracks = opt.dataDir + "/tracks";
     if (!ov_.load(tracks + "/overview.wov", err)) return false;
-    if (!store_.open(tracks, err)) return false;
+    std::string vcf = opt.variants;
+    if (vcf.empty()) {
+        std::error_code ec;
+        std::vector<std::string> found;
+        for (auto& e : std::filesystem::directory_iterator(opt.dataDir, ec)) {
+            std::string pth = e.path().string();
+            if (pth.size() > 7 && pth.compare(pth.size() - 7, 7, ".vcf.gz") == 0 && std::filesystem::exists(pth + ".tbi", ec))
+                found.push_back(pth);
+        }
+        std::sort(found.begin(), found.end());
+        if (!found.empty()) vcf = found.front();
+    }
+    if (!store_.open(tracks, vcf, err)) return false;
+    std::fprintf(stderr, "variants: %s\n", store_.hasVariants() ? vcf.c_str() : "(none)");
     if (!genome_.open(opt.dataDir + "/hs1.fa.bgz", err)) return false;
     // natural order chr1..chr22, chrX, chrY (chrM is too small to show)
     auto rank = [](const std::string& n) {
@@ -182,7 +196,8 @@ void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
     const std::string& chrom = ov_.chroms()[ci].name;
     std::set<std::tuple<int64_t, int64_t, std::string>> seenGenes;
     for (int64_t t = s / TrackStore::kTile; t <= (e - 1) / TrackStore::kTile; ++t) {
-        for (int k = 0; k < 4; ++k) {
+        for (int k = 0; k < kTrackCount; ++k) {
+            if (k == int(Track::Variants) && !store_.hasVariants()) continue;
             TilePtr tile = store_.request(Track(k), chrom, t);
             if (!tile) { v.loading[k] = true; continue; }
             v.hold.push_back(tile);
@@ -192,6 +207,7 @@ void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
             for (auto& x : tile->ccres) if (x.e > s && x.s < e) v.ccres.push_back(&x);
             for (auto& x : tile->repeats) if (x.e > s && x.s < e) v.repeats.push_back(&x);
             for (auto& x : tile->notin) if (x.e > s && x.s < e) v.notin.push_back(&x);
+            for (auto& x : tile->variants) if (x.e > s && x.s < e) v.variants.push_back(&x);
         }
     }
 }
@@ -454,8 +470,9 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     }
 
     // track heights (genes 48, cCRE 24, repeats 24); each track has a 14px header line for hints
+    const float varH = 20;
     const float hdrH = 14, geneTrackH = 48, ccreH = 24, repH = 24, niH = 14;
-    const float stackH = 26 + (10 + 8) + (hdrH + 20 + 6) + (hdrH + geneTrackH + 6) + (hdrH + ccreH + 6) + (hdrH + repH + 6) + niH;
+    const float stackH = 26 + (10 + 8) + (hdrH + 20 + 6) + (hdrH + geneTrackH + 6) + (hdrH + ccreH + 6) + (hdrH + repH + 6) + niH + (6 + hdrH + varH);
     const float availTop = A.y + 40, availBot = B.y - 30;
     float y = availTop + std::max(0.f, (availBot - availTop - stackH) * 0.5f);
     auto hint = [&](float hy, const char* t) {
@@ -676,7 +693,49 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             if (!ni && hs >= 0) { hatches.push_back({tx0 + hs, niY, tx0 + p, niY + niH}); hs = -1; }
         }
     }
-    const float tracksBottom = niY + niH;
+    // variants: 1 px ticks; when several fall in one pixel, ticks become per-pixel density bars
+    const float varHdrY = niY + niH + 6, varY = varHdrY + hdrH;
+    laneLabel(varY, varH, "Variants");
+    if (!store_.hasVariants()) {
+        hint(varHdrY, "no variant file found in data/ (expects a bgzipped VCF + .tbi)");
+    } else if (!detailed) {
+        hint(varHdrY, "zoom below 3 Mb to load variants");
+    } else if (vis.loading[int(Track::Variants)]) {
+        hint(varHdrY, "loading variants...");
+    } else if (vis.variants.empty()) {
+        hint(varHdrY, "no variants here (variant file covers chr22 only)");
+    } else {
+        std::vector<int> cnt(cols, 0);
+        std::vector<float> maxAf(cols, 0.f);
+        for (auto* v : vis.variants) {
+            int px = int((double(v->s) - viewS_) * pxPerBp);
+            if (px < 0 || px >= cols) continue;
+            ++cnt[px];
+            maxAf[px] = std::max(maxAf[px], v->af);
+        }
+        int mx = *std::max_element(cnt.begin(), cnt.end());
+        bool dense = mx > 1;
+        char h[160];
+        std::snprintf(h, sizeof h, "%s variants in view (1KGP, %s)  %s", commas(int64_t(vis.variants.size())).c_str(),
+                      dense ? "density per pixel" : "one tick per variant", "brighter = more common");
+        hint(varHdrY, h);
+        if (!dense && pxPerBp >= 1) {
+            for (auto* v : vis.variants) {
+                float x0 = X(double(v->s)), x1 = std::max(X(double(v->e)), x0 + 1.f);
+                float a = v->af >= 0.01f ? 1.f : 0.45f;
+                if (x1 - x0 > 2) dl->AddRectFilled(ImVec2(x0 + 1, varY), ImVec2(x1 - 1, varY + varH), col(kAccent, a * 0.6f));
+                else dl->AddLine(ImVec2(x0 + 0.5f, varY), ImVec2(x0 + 0.5f, varY + varH), col(kAccent, a));
+            }
+        } else {
+            for (int p = 0; p < cols; ++p) {
+                if (!cnt[p]) continue;
+                float hgt = varH * (0.25f + 0.75f * float(cnt[p]) / float(mx));
+                float a = maxAf[p] >= 0.01f ? 1.f : 0.45f;
+                dl->AddRectFilled(ImVec2(tx0 + p, varY + varH - hgt), ImVec2(tx0 + p + 1, varY + varH), col(kAccent, a));
+            }
+        }
+    }
+    const float tracksBottom = varY + varH;
 
     // fog over 'nothing known' columns, spanning all lanes
     for (int p = 0; p < cols;) {
@@ -695,6 +754,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         loadingFog(vis.loading[1], ccreY, ccreH);
         loadingFog(vis.loading[2], repY, repH);
         loadingFog(vis.loading[3], niY, niH);
+        loadingFog(vis.loading[int(Track::Variants)], varY, varH);
         loadingFog(vis.loading[0] || vis.loading[1] || vis.loading[2], catY, catH);
     }
     dl->PushClipRect(ImVec2(tx0, A.y), ImVec2(tx1, B.y), true);
@@ -871,6 +931,12 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
             chip(kColCcre);
             ImGui::Text("cCRE %s", c2->id.c_str());
             ImGui::TextColored(vec(kMuted), "regulatory element, class %s, %s", c2->cls.c_str(), spanStr(double(c2->e - c2->s)).c_str());
+            ++shown;
+        }
+        for (auto* x : v.variants) {
+            chip(kAccent);
+            ImGui::Text("Variant %s > %s", x->ref.c_str(), x->alt.c_str());
+            if (x->af >= 0) ImGui::TextColored(vec(kMuted), "1KGP allele frequency %.4f%% (%s)", x->af * 100.0, x->af >= 0.01f ? "common" : "rare");
             ++shown;
         }
         for (auto* r : v.repeats) {
