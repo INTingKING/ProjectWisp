@@ -86,6 +86,7 @@ const char* pillName(int c) {
 
 bool App::init(const AppOptions& opt, std::string& err) {
     opt_ = opt;
+    svExpanded_ = opt.expandSv;
     std::string tracks = opt.dataDir + "/tracks";
     if (!ov_.load(tracks + "/overview.wov", err)) return false;
     std::string vcf = opt.variants;
@@ -503,7 +504,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // track heights (genes 48, cCRE 24, repeats 24); each track has a 14px header line for hints
     const float varH = 20;
     const float hdrH = 14, geneTrackH = 48, ccreH = 24, repH = 24, niH = 14;
-    const float stackH = 26 + (10 + 8) + (hdrH + 20 + 6) + (hdrH + geneTrackH + 6) + (hdrH + ccreH + 6) + (hdrH + repH + 6) + niH + (6 + hdrH + varH) + (6 + hdrH + varH);
+    const float stackH = 26 + (10 + 8) + (hdrH + 20 + 6) + (hdrH + geneTrackH + 6) + (hdrH + ccreH + 6) + (hdrH + repH + 6) + niH + (6 + hdrH + varH) + (6 + hdrH + (svExpanded_ ? std::max(20.f, svRowsLast_ * 7.f + 5.f) : 20.f));
     const float availTop = A.y + 40, availBot = B.y - 30;
     float y = availTop + std::max(0.f, (availBot - availTop - stackH) * 0.5f);
     auto hint = [&](float hy, const char* t) {
@@ -757,9 +758,20 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             }
         }
     }
-    // structural variants (HPRC pangenome): ins = 2 px tick + caret, del/inv/complex = bars
-    const float svH = 20, svHdrY = varY + varH + 6, svY = svHdrY + hdrH;
-    laneLabel(svY, svH, "SVs");
+    // structural variants (HPRC pangenome): ins = 2 px tick + caret, del/inv/complex = bars.
+    // Collapsed: largest first so smaller events sit on top (covered ones get a 1 px outline).
+    // Expanded: greedy sub-rows, 6 px + 1 px gap, max 8 rows, '+N more' for overflow.
+    const float svH = svExpanded_ ? std::max(20.f, svRowsLast_ * 7.f - 1.f + 6.f) : 20.f;
+    const float svHdrY = varY + varH + 6, svY = svHdrY + hdrH;
+    laneLabel(svY, std::min(svH, 20.f), "SVs");
+    {  // expand / collapse chevron at the right of the header line
+        ImVec2 c(tx1 - 6, svHdrY + 7);
+        ImGui::SetCursorScreenPos(ImVec2(tx1 - 16, svHdrY - 1));
+        if (ImGui::InvisibleButton("##svexpand", ImVec2(16, 15))) svExpanded_ = !svExpanded_;
+        unsigned cc = ImGui::IsItemHovered() ? kAccent : kMuted;
+        if (svExpanded_) dl->AddTriangleFilled(ImVec2(c.x - 4, c.y + 2), ImVec2(c.x + 4, c.y + 2), ImVec2(c.x, c.y - 3), col(cc));
+        else dl->AddTriangleFilled(ImVec2(c.x - 4, c.y - 2), ImVec2(c.x + 4, c.y - 2), ImVec2(c.x, c.y + 3), col(cc));
+    }
     if (!store_.hasSv()) {
         hint(svHdrY, "no SV file (run scripts/fetch_sv.sh)");
     } else if (!detailed) {
@@ -769,39 +781,92 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     } else {
         int nIns = 0, nDel = 0, nInv = 0, nCx = 0;
         for (auto* v : vis.svs) {
-            float a = v->af >= 0.01f ? 1.f : 0.35f;
-            float x0 = std::max(tx0, X(double(v->s))), x1 = std::min(tx1, std::max(X(double(v->e)), X(double(v->s)) + 2.f));
-            switch (v->type) {
-                case SvType::Ins: ++nIns; break;
-                case SvType::Del:
-                    ++nDel;
-                    dl->AddRectFilled(ImVec2(x0, svY + 5), ImVec2(x1, svY + svH - 3), col(0xE8A13A, a), 2);
-                    break;
-                case SvType::Inv:
-                    ++nInv;
-                    dl->AddRectFilled(ImVec2(x0, svY + 5), ImVec2(x1, svY + svH - 3), col(0xB07CFF, a * 0.55f), 2);
-                    dl->PushClipRect(ImVec2(x0, svY + 5), ImVec2(x1, svY + svH - 3), true);
-                    for (float lx = x0 - svH; lx < x1; lx += 5)
-                        dl->AddLine(ImVec2(lx, svY + svH - 3), ImVec2(lx + svH - 8, svY + 5), col(0xB07CFF, a), 1.f);
-                    dl->PopClipRect();
-                    break;
-                case SvType::Complex:
-                    ++nCx;
-                    dl->AddRectFilled(ImVec2(x0, svY + 5), ImVec2(x1, svY + svH - 3), col(0x8A8F99, a), 2);
-                    break;
-            }
+            nIns += v->type == SvType::Ins; nDel += v->type == SvType::Del;
+            nInv += v->type == SvType::Inv; nCx += v->type == SvType::Complex;
         }
-        for (auto* v : vis.svs) {  // insertions on top: fixed-width tick + caret
-            if (v->type != SvType::Ins) continue;
+        auto svColor = [](SvType t) -> unsigned {
+            return t == SvType::Ins ? 0x5B8DEF : t == SvType::Del ? 0xE8A13A : t == SvType::Inv ? 0xB07CFF : 0x8A8F99;
+        };
+        // px extent of an event (insertions: fixed 6 px around the anchor)
+        auto extent = [&](const Sv* v, float& x0, float& x1) {
+            if (v->type == SvType::Ins) { float x = X(double(v->s) + 1.0); x0 = x - 3; x1 = x + 3; }
+            else { x0 = X(double(v->s)); x1 = std::max(X(double(v->e)), x0 + 2.f); }
+        };
+        auto drawBar = [&](const Sv* v, float x0, float x1, float y0, float y1, bool outline) {
+            float a = v->af >= 0.01f ? 1.f : 0.35f;
+            x0 = std::max(tx0, x0); x1 = std::min(tx1, x1);
+            if (x1 <= x0) return;
+            unsigned c = svColor(v->type);
+            if (outline) dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), col(kBg), 0, 0, 1.f);
+            if (v->type == SvType::Inv) {
+                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(c, a * 0.55f), 1);
+                dl->PushClipRect(ImVec2(x0, y0), ImVec2(x1, y1), true);
+                float h = y1 - y0;
+                for (float lx = x0 - h; lx < x1; lx += 5) dl->AddLine(ImVec2(lx, y1), ImVec2(lx + h, y0), col(c, a), 1.f);
+                dl->PopClipRect();
+            } else {
+                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(c, a), 1);
+            }
+        };
+        auto drawIns = [&](const Sv* v, float y0, float y1, bool caret) {
             float a = v->af >= 0.01f ? 1.f : 0.35f;
             float x = X(double(v->s) + 1.0);
-            if (x < tx0 || x > tx1) continue;
-            dl->AddRectFilled(ImVec2(x - 1, svY + 6), ImVec2(x + 1, svY + svH - 2), col(0x5B8DEF, a));
-            dl->AddTriangleFilled(ImVec2(x - 4, svY + 1), ImVec2(x + 4, svY + 1), ImVec2(x, svY + 6), col(0x5B8DEF, a));
+            if (x < tx0 || x > tx1) return;
+            dl->AddRectFilled(ImVec2(x - 1, y0), ImVec2(x + 1, y1), col(0x5B8DEF, a));
+            if (caret) dl->AddTriangleFilled(ImVec2(x - 4, y0 - 5), ImVec2(x + 4, y0 - 5), ImVec2(x, y0), col(0x5B8DEF, a));
+            else dl->AddTriangleFilled(ImVec2(x - 3, y0), ImVec2(x + 3, y0), ImVec2(x, y0 + 3), col(0x5B8DEF, a));
+        };
+        if (!svExpanded_) {
+            std::vector<const Sv*> bars;
+            for (auto* v : vis.svs) if (v->type != SvType::Ins) bars.push_back(v);
+            std::stable_sort(bars.begin(), bars.end(), [](auto* a2, auto* b2) { return (a2->e - a2->s) > (b2->e - b2->s); });
+            std::vector<std::pair<float, float>> drawn;  // px extents of bigger bars already drawn
+            for (auto* v : bars) {
+                float x0, x1;
+                extent(v, x0, x1);
+                bool covered = false;
+                for (auto& d : drawn) if (d.first < x1 && x0 < d.second) { covered = true; break; }
+                drawBar(v, x0, x1, svY + 5, svY + svH - 3, covered);
+                drawn.push_back({x0, x1});
+            }
+            for (auto* v : vis.svs) if (v->type == SvType::Ins) drawIns(v, svY + 6, svY + svH - 2, true);
+            svRowsLast_ = 1;
+        } else {
+            std::vector<const Sv*> all(vis.svs.begin(), vis.svs.end());
+            std::stable_sort(all.begin(), all.end(), [](auto* a2, auto* b2) { return a2->s < b2->s; });
+            const int maxRows = 8;
+            std::vector<float> rowEnd;
+            int overflow = 0;
+            float top = svY + 6;  // room for insertion carets of row 0
+            for (auto* v : all) {
+                float x0, x1;
+                extent(v, x0, x1);
+                if (x1 < tx0 || x0 > tx1) continue;
+                int row = -1;
+                for (int r = 0; r < int(rowEnd.size()); ++r) if (rowEnd[r] <= x0) { row = r; break; }
+                if (row < 0 && int(rowEnd.size()) < maxRows) { row = int(rowEnd.size()); rowEnd.push_back(-1e9f); }
+                if (row < 0) { ++overflow; continue; }
+                rowEnd[row] = x1 + 1;
+                float ry = top + row * 7.f;
+                if (v->type == SvType::Ins) drawIns(v, ry, ry + 6, false);
+                else drawBar(v, x0, x1, ry, ry + 6, false);
+            }
+            svRowsLast_ = std::max(1, int(rowEnd.size()));
+            if (overflow) {
+                char more[32];
+                std::snprintf(more, sizeof more, "+%d more", overflow);
+                ImGui::PushFont(fonts().monoSmall);
+                ImVec2 ms = ImGui::CalcTextSize(more);
+                float my = top + (svRowsLast_ - 1) * 7.f + 3 - ms.y * 0.5f;
+                dl->AddRectFilled(ImVec2(tx1 - ms.x - 6, my), ImVec2(tx1, my + ms.y), col(kPanel, 0.9f));
+                dl->AddText(ImVec2(tx1 - ms.x - 3, my), col(kMuted), more);
+                ImGui::PopFont();
+            }
         }
         char h[200];
         if (vis.svs.empty()) std::snprintf(h, sizeof h, "no structural variants >= 50 bp here (HPRC pangenome)");
-        else std::snprintf(h, sizeof h, "HPRC pangenome SVs >= 50 bp: %d ins, %d del, %d inv, %d complex  |  bright = AF >= 1%%", nIns, nDel, nInv, nCx);
+        else std::snprintf(h, sizeof h, "HPRC pangenome SVs >= 50 bp: %d ins, %d del, %d inv, %d complex  |  bright = AF >= 1%%  |  %s",
+                           nIns, nDel, nInv, nCx, svExpanded_ ? "expanded" : "collapsed");
         hint(svHdrY, h);
     }
     const float tracksBottom = svY + svH;

@@ -19,6 +19,7 @@ struct AppOptions {
     std::string pin;     // "chr22:12345" pins the lookup card
     std::string variants;  // bgzipped+tabixed VCF; default: first *.vcf.gz with .tbi in dataDir
     bool reducedMotion = false;
+    bool expandSv = false;  // --expand sv
 };
 
 struct Probe {
@@ -69,6 +70,8 @@ private:
     int dragCi_ = -1;
     float dragX0_ = 0;
     char gotoBuf_[96] = {};
+    bool svExpanded_ = false;  // per session only, never saved
+    int svRowsLast_ = 1;
     // 5th/95th percentile of per-bin share (known = exon+cCRE, nothing), for overview contrast stretch
     float knownP5_ = 0, knownP95_ = 1, nothingP5_ = 0, nothingP95_ = 1;
     float stretchAlpha(float share, float p5, float p95) const;
