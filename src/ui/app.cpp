@@ -88,6 +88,7 @@ const char* pillName(int c) {
 bool App::init(const AppOptions& opt, std::string& err) {
     opt_ = opt;
     svExpanded_ = opt.expandSv;
+    cardSvExpanded_ = opt.expandCard;
     std::string tracks = opt.dataDir + "/tracks";
     if (!ov_.load(tracks + "/overview.wov", err)) return false;
     std::string vcf = opt.variants;
@@ -206,7 +207,15 @@ void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
             for (auto& x : tile->repeats) if (x.e > s && x.s < e) v.repeats.push_back(&x);
             for (auto& x : tile->notin) if (x.e > s && x.s < e) v.notin.push_back(&x);
             for (auto& x : tile->variants) if (x.e > s && x.s < e) v.variants.push_back(&x);
-            for (auto& x : tile->svs) if (x.e > s && x.s < e) v.svs.push_back(&x);
+            // SV groups: take each group from the tile its start falls in (or the first tile for groups starting
+            // before the view), so groups spanning tile borders are not duplicated
+            int64_t t0 = s / TrackStore::kTile;
+            for (auto& g : tile->svGroups) {
+                if (!(g.e > s && g.s < e)) continue;
+                if (!(g.s / TrackStore::kTile == t || (t == t0 && g.s < t0 * TrackStore::kTile))) continue;
+                v.svGroups.push_back(&g);
+                for (int i = 0; i < g.count; ++i) v.svs.push_back(&g.alleles[i]);
+            }
             for (auto& x : tile->methyl) if (int64_t(x.e) > s && int64_t(x.s) < e) v.methyl.push_back(&x);
         }
     }
@@ -810,77 +819,66 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     } else if (vis.loading[int(Track::Sv)]) {
         hint(svHdrY, "loading structural variants...");
     } else {
-        int nIns = 0, nDel = 0, nInv = 0, nCx = 0;
-        for (auto* v : vis.svs) {
-            nIns += v->type == SvType::Ins; nDel += v->type == SvType::Del;
-            nInv += v->type == SvType::Inv; nCx += v->type == SvType::Complex;
-        }
-        auto svColor = [](SvType t) -> unsigned {
-            return t == SvType::Ins ? 0x5B8DEF : t == SvType::Del ? 0xE8A13A : t == SvType::Inv ? 0xB07CFF : 0x8A8F99;
+        int nIns = 0, nDel = 0, nCx = 0;
+        for (auto* g : vis.svGroups) { nIns += g->type == SvType::Ins; nDel += g->type == SvType::Del; nCx += g->type != SvType::Ins && g->type != SvType::Del; }
+        auto svColor = [](SvType t) -> unsigned { return t == SvType::Ins ? 0x5B8DEF : t == SvType::Del ? 0xE8A13A : 0x8A8F99; };
+        auto extentOf = [&](int64_t s0, int64_t e0, SvType t, float& x0, float& x1) {
+            if (t == SvType::Ins) { float x = X(double(s0) + 1.0); x0 = x - 3; x1 = x + 3; }
+            else { x0 = X(double(s0)); x1 = std::max(X(double(e0)), x0 + 2.f); }
         };
-        // px extent of an event (insertions: fixed 6 px around the anchor)
-        auto extent = [&](const Sv* v, float& x0, float& x1) {
-            if (v->type == SvType::Ins) { float x = X(double(v->s) + 1.0); x0 = x - 3; x1 = x + 3; }
-            else { x0 = X(double(v->s)); x1 = std::max(X(double(v->e)), x0 + 2.f); }
-        };
-        auto drawBar = [&](const Sv* v, float x0, float x1, float y0, float y1, bool outline) {
-            float a = v->af >= 0.01f ? 1.f : 0.35f;
+        // bar: complex (grey, 1 px violet top edge when it contains an inversion) or deletion (amber)
+        auto drawBar = [&](SvType t, bool inv, float af, float x0, float x1, float y0, float y1, bool outline) {
+            float a = af >= 0.01f ? 1.f : 0.35f;
             x0 = std::max(tx0, x0); x1 = std::min(tx1, x1);
             if (x1 <= x0) return;
-            unsigned c = svColor(v->type);
             if (outline) dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), col(kBg), 0, 0, 1.f);
-            if (v->type == SvType::Inv) {
-                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(c, a * 0.55f), 1);
-                dl->PushClipRect(ImVec2(x0, y0), ImVec2(x1, y1), true);
-                float h = y1 - y0;
-                for (float lx = x0 - h; lx < x1; lx += 5) dl->AddLine(ImVec2(lx, y1), ImVec2(lx + h, y0), col(c, a), 1.f);
-                dl->PopClipRect();
-            } else {
-                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(c, a), 1);
-            }
+            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(svColor(t), a), 1);
+            if (inv) dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y0 + 1), col(0xB07CFF, std::max(a, 0.6f)));
         };
-        auto drawIns = [&](const Sv* v, float y0, float y1, bool caret) {
-            float a = v->af >= 0.01f ? 1.f : 0.35f;
-            float x = X(double(v->s) + 1.0);
+        auto drawIns = [&](int64_t s0, float af, float y0, float y1, bool caret) {
+            float a = af >= 0.01f ? 1.f : 0.35f;
+            float x = X(double(s0) + 1.0);
             if (x < tx0 || x > tx1) return;
             dl->AddRectFilled(ImVec2(x - 1, y0), ImVec2(x + 1, y1), col(0x5B8DEF, a));
             if (caret) dl->AddTriangleFilled(ImVec2(x - 4, y0 - 5), ImVec2(x + 4, y0 - 5), ImVec2(x, y0), col(0x5B8DEF, a));
             else dl->AddTriangleFilled(ImVec2(x - 3, y0), ImVec2(x + 3, y0), ImVec2(x, y0 + 3), col(0x5B8DEF, a));
         };
+        auto groupAf = [](const SvGroup* g) { return g->an > 0 ? float(g->ac) / float(g->an) : -1.f; };
         if (!svExpanded_) {
-            // draw order: deletions (and complex), insertions, then inversions last; larger first within a type
-            auto rank = [](SvType t) { return t == SvType::Inv ? 2 : t == SvType::Ins ? 1 : 0; };
-            std::vector<const Sv*> bars(vis.svs.begin(), vis.svs.end());
-            std::stable_sort(bars.begin(), bars.end(), [&](auto* a2, auto* b2) {
+            // one bar per allele group; order: complex (bottom), deletions, insertions; larger first within a type
+            auto rank = [](SvType t) { return t == SvType::Ins ? 2 : t == SvType::Del ? 1 : 0; };
+            std::vector<const SvGroup*> gs(vis.svGroups.begin(), vis.svGroups.end());
+            std::stable_sort(gs.begin(), gs.end(), [&](auto* a2, auto* b2) {
                 if (rank(a2->type) != rank(b2->type)) return rank(a2->type) < rank(b2->type);
                 return (a2->e - a2->s) > (b2->e - b2->s);
             });
-            // union of px extents already drawn (disjoint, keyed by start): overlap query + merge in O(log n)
-            std::map<float, float> drawn;
-            for (auto* v : bars) {
+            std::map<float, float> drawn;  // union of drawn px extents for the outline test (O(log n) per bar)
+            for (auto* g : gs) {
                 float x0, x1;
-                extent(v, x0, x1);
+                extentOf(g->s, g->e, g->type, x0, x1);
                 auto it = drawn.upper_bound(x0);
                 bool covered = (it != drawn.end() && it->first < x1);
                 if (it != drawn.begin() && std::prev(it)->second > x0) covered = true;
-                if (v->type == SvType::Ins) drawIns(v, svY + 6, svY + svH - 2, true);
-                else drawBar(v, x0, x1, svY + 5, svY + svH - 3, covered);
-                float m0 = x0, m1 = x1;  // merge [x0,x1) into the union
+                if (g->type == SvType::Ins) drawIns(g->s, groupAf(g), svY + 6, svY + svH - 2, true);
+                else drawBar(g->type, g->inv, groupAf(g), x0, x1, svY + 5, svY + svH - 3, covered);
+                float m0 = x0, m1 = x1;
                 if (it != drawn.begin() && std::prev(it)->second >= x0) { --it; m0 = std::min(m0, it->first); }
                 while (it != drawn.end() && it->first <= x1) { m1 = std::max(m1, it->second); it = drawn.erase(it); }
                 drawn[m0] = m1;
             }
             svRowsLast_ = 1;
         } else {
+            // every allele on its own row slot (greedy packing by start)
             std::vector<const Sv*> all(vis.svs.begin(), vis.svs.end());
             std::stable_sort(all.begin(), all.end(), [](auto* a2, auto* b2) { return a2->s < b2->s; });
             const int maxRows = 8;
             std::vector<float> rowEnd;
             int overflow = 0;
-            float top = svY + 6;  // room for insertion carets of row 0
+            float top = svY + 6;
             for (auto* v : all) {
                 float x0, x1;
-                extent(v, x0, x1);
+                SvType t = v->type == SvType::Inv ? SvType::Complex : v->type;
+                extentOf(v->s, v->e, t, x0, x1);
                 if (x1 < tx0 || x0 > tx1) continue;
                 int row = -1;
                 for (int r = 0; r < int(rowEnd.size()); ++r) if (rowEnd[r] <= x0) { row = r; break; }
@@ -888,8 +886,8 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 if (row < 0) { ++overflow; continue; }
                 rowEnd[row] = x1 + 1;
                 float ry = top + row * 7.f;
-                if (v->type == SvType::Ins) drawIns(v, ry, ry + 6, false);
-                else drawBar(v, x0, x1, ry, ry + 6, false);
+                if (t == SvType::Ins) drawIns(v->s, v->af, ry, ry + 6, false);
+                else drawBar(t, v->inv, v->af, x0, x1, ry, ry + 6, false);
             }
             svRowsLast_ = std::max(1, int(rowEnd.size()));
             if (overflow) {
@@ -903,10 +901,10 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 ImGui::PopFont();
             }
         }
-        char h[200];
-        if (vis.svs.empty()) std::snprintf(h, sizeof h, "no structural variants >= 50 bp here (HPRC pangenome)");
-        else std::snprintf(h, sizeof h, "HPRC pangenome SVs >= 50 bp: %d ins, %d del, %d inv, %d complex  |  bright = AF >= 1%%  |  %s",
-                           nIns, nDel, nInv, nCx, svExpanded_ ? "expanded" : "collapsed");
+        char h[220];
+        if (vis.svGroups.empty()) std::snprintf(h, sizeof h, "no structural variants >= 50 bp here (HPRC pangenome)");
+        else std::snprintf(h, sizeof h, "HPRC pangenome SVs >= 50 bp: %d sites (%d alleles): %d ins, %d del, %d complex  |  bright = AF >= 1%%  |  %s",
+                           int(vis.svGroups.size()), int(vis.svs.size()), nIns, nDel, nCx, svExpanded_ ? "one row per allele" : "one bar per site");
         hint(svHdrY, h);
     }
     svMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - svT0).count();
@@ -1098,18 +1096,60 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
             // structural variants touching this base (insertions: within 1 bp of the anchor)
             Visible sv;
             gather(p.ci, std::max<int64_t>(0, p.pos - 1), p.pos + 2, sv);
-            for (auto* x : sv.svs) {
-                bool hit = x->type == SvType::Ins ? std::llabs(x->s - p.pos) <= 1 : (x->s <= p.pos && p.pos < x->e);
+            auto kb = [](int64_t bp) {
+                char b2[32];
+                if (std::llabs(bp) >= 1000) std::snprintf(b2, sizeof b2, "%.3g kb", double(bp) / 1000.0);
+                else std::snprintf(b2, sizeof b2, "%lld bp", (long long)bp);
+                return std::string(b2);
+            };
+            auto describe = [&](const Sv* x) {  // plain description of one allele
+                char d[200];
+                if (x->type == SvType::Ins) std::snprintf(d, sizeof d, "Insertion of %s bp", commas(x->len).c_str());
+                else if (x->type == SvType::Del) std::snprintf(d, sizeof d, "Deletion of %s bp", commas(x->len).c_str());
+                else std::snprintf(d, sizeof d, "Complex rearrangement over %s (net %s%s)%s", kb(x->refLen).c_str(),
+                                   x->net > 0 ? "+" : "", kb(x->net).c_str(), x->inv ? ", contains an inversion" : "");
+                return std::string(d);
+            };
+            auto groupColor = [](const SvGroup* g) -> unsigned { return g->type == SvType::Ins ? 0x5B8DEF : g->type == SvType::Del ? 0xE8A13A : 0x8A8F99; };
+            for (auto* g : sv.svGroups) {
+                bool hit = g->type == SvType::Ins ? std::llabs(g->s - p.pos) <= 1 : (g->s <= p.pos && p.pos < g->e);
                 if (!hit) continue;
-                const char* kind = x->type == SvType::Ins ? "Insertion" : x->type == SvType::Del ? "Deletion" : x->type == SvType::Inv ? "Inversion" : "Complex change";
-                unsigned c = x->type == SvType::Ins ? 0x5B8DEF : x->type == SvType::Del ? 0xE8A13A : x->type == SvType::Inv ? 0xB07CFF : 0x8A8F99;
-                swatch(c);
-                const char* atLeast = x->merged > 1 ? "at least " : "";  // merged records: max AC is a lower bound
-                if (x->an > 0)
-                    ImGui::TextColored(vec(kText, 0.95f), "%s of %s bp, found on %s%.0f%% of chromosome copies (%d of %d)", kind,
-                                       commas(x->len).c_str(), atLeast, 100.0 * x->ac / x->an, x->ac, x->an);
-                else
-                    ImGui::TextColored(vec(kText, 0.95f), "%s of %s bp in the pangenome", kind, commas(x->len).c_str());
+                swatch(groupColor(g));
+                if (g->count == 1) {
+                    const Sv* x = g->alleles;
+                    if (x->an > 0)
+                        ImGui::TextColored(vec(kText, 0.95f), "%s, found on %s%.0f%% of chromosome copies (%d of %d)", describe(x).c_str(),
+                                           x->merged > 1 ? "at least " : "", 100.0 * x->ac / x->an, x->ac, x->an);
+                    else
+                        ImGui::TextColored(vec(kText, 0.95f), "%s", describe(x).c_str());
+                    continue;
+                }
+                // group: one entry with a chevron that expands to the allele list
+                ImGui::PushID(g);
+                ImVec2 cp = ImGui::GetCursorScreenPos();
+                char t[160];
+                std::snprintf(t, sizeof t, "%d alleles here, together on %s%d of %d copies", g->count, g->atLeast ? "at least " : "", g->ac, g->an);
+                float wrapW = ImGui::GetContentRegionAvail().x - 18;
+                ImVec2 ts = ImGui::CalcTextSize(t, nullptr, false, wrapW);
+                if (ImGui::InvisibleButton("##grp", ImVec2(ImGui::GetContentRegionAvail().x, ts.y))) cardSvExpanded_ = !cardSvExpanded_;
+                bool hov = ImGui::IsItemHovered();
+                cdl->AddText(nullptr, 0.f, cp, U(kText, 0.95f), t, nullptr, wrapW);
+                ImVec2 c(cp.x + wrapW + 10, cp.y + 8);
+                unsigned cc = hov ? kAccent : kMuted;
+                if (cardSvExpanded_) cdl->AddTriangleFilled(ImVec2(c.x - 4, c.y - 2), ImVec2(c.x + 4, c.y - 2), ImVec2(c.x, c.y + 3), U(cc));
+                else cdl->AddTriangleFilled(ImVec2(c.x - 2, c.y - 4), ImVec2(c.x - 2, c.y + 4), ImVec2(c.x + 3, c.y), U(cc));
+                ImGui::PopID();
+                if (cardSvExpanded_) {
+                    ImGui::Indent(20);
+                    for (int i = 0; i < g->count; ++i) {
+                        const Sv* x = &g->alleles[i];
+                        ImGui::TextColored(vec(kText, 0.85f), "%s", describe(x).c_str());
+                        ImGui::PushFont(fonts().monoSmall);
+                        ImGui::TextColored(vec(kMuted), "  %s%d of %d copies", x->merged > 1 ? "at least " : "", x->ac, x->an);
+                        ImGui::PopFont();
+                    }
+                    ImGui::Unindent(20);
+                }
             }
         }
         if (!v.genes.empty()) {

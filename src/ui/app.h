@@ -20,6 +20,7 @@ struct AppOptions {
     std::string variants;  // bgzipped+tabixed VCF; default: first *.vcf.gz with .tbi in dataDir
     bool reducedMotion = false;
     bool expandSv = false;  // --expand sv
+    bool expandCard = false;  // --expand-card
 };
 
 struct Probe {
@@ -45,6 +46,7 @@ private:
         std::vector<const Interval*> notin;
         std::vector<const Variant*> variants;
         std::vector<const Sv*> svs;
+        std::vector<const SvGroup*> svGroups;
         std::vector<const MethylSite*> methyl;
         bool loading[kTrackCount] = {};
         std::vector<TilePtr> hold;
@@ -71,7 +73,8 @@ private:
     int dragCi_ = -1;
     float dragX0_ = 0;
     char gotoBuf_[96] = {};
-    bool svExpanded_ = false;  // per session only, never saved
+    bool svExpanded_ = false;
+    bool cardSvExpanded_ = false;  // allele list in the lookup card (session only)  // per session only, never saved
     int svRowsLast_ = 1;
     double svMs_ = 0;  // last SV-track draw time (shot mode reports it)
 public:
