@@ -2,7 +2,10 @@
 // ProjectWisp UI: top bar + coverage bar, genome overview, region view with tracks, lookup card.
 #include <imgui.h>
 
+#include <atomic>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <set>
 #include <string>
 #include <vector>
@@ -25,7 +28,9 @@ struct AppOptions {
     bool expandSv = false;  // --expand sv
     bool expandCard = false;  // --expand-card
     std::string rsidPack;  // --rsid-pack PATH (default data/packs/rsid/rsid.idx)
-    bool packCard = false;  // --pack-card: open the optional-download card
+    bool packCard = false;
+    bool packDownload = false;  // --pack-download: start the background pack build at launch
+    bool expandRare = false;  // --expand-rare  // --pack-card: open the optional-download card
     std::string searchGroup;  // --search-group SYMBOL
     bool searchMore = false;  // --search-more: expanded "+N more" list
     std::string search;  // --search QUERY: open the search box with this text
@@ -41,6 +46,7 @@ struct Probe {
 
 class App {
 public:
+    ~App();
     bool init(const AppOptions& opt, std::string& err);
     void frame(FogRenderer& fog);
     bool idle() const;
@@ -88,6 +94,18 @@ private:
     // gene search
     GeneIndex genes_;
     RsidIndex rsid_;
+    RsidHit lastRs_{};          // last rsID jumped to (card shows its dbSNP line at that position)
+    bool rareOpen_ = false;     // "+N rare alleles" expanded
+    // background pack download (scripts/fetch_rsid_pack.sh run in a thread, progress parsed from its stderr)
+    std::thread dlThread_;
+    std::atomic<int> dlState_{0};  // 0 idle, 1 running, 2 done, 3 failed
+    std::atomic<long long> dlBytes_{0}, dlTotal_{0};
+    std::atomic<int> dlPhase_{0};  // 0 download, 1 sort, 2 index
+    std::mutex dlMu_;
+    std::string dlMsg_;
+    bool manualOpen_ = false;
+    void startPackDownload();
+    std::string rsidSizeStr() const;
     bool packCard_ = false;
     char searchBuf_[96] = {};
     bool searchOpen_ = false, searchFocus_ = false;

@@ -1,6 +1,7 @@
 #include "ui/app.h"
 
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -14,7 +15,7 @@
 namespace wisp {
 
 // measured from the built pack (scripts/fetch_rsid_pack.sh); shown on the download card
-static const char* kRsidPackSize = "408 MB";
+static const char* kRsidPackSize = "378 MB";
 static const char* kRsidPackCount = "19.4 million";
 static const char* kRsidPackStream = "24.9 GB";
 
@@ -169,6 +170,8 @@ bool App::init(const AppOptions& opt, std::string& err) {
         if (rsid_.open(rp)) std::fprintf(stderr, "rsID pack: %u rsIDs (%s)\n", rsid_.count(), rp.c_str());
         else std::fprintf(stderr, "rsID pack: not installed (%s)\n", rp.c_str());
         packCard_ = opt.packCard;
+        rareOpen_ = opt.expandRare;
+        if (opt.packDownload) startPackDownload();
     }
     if (!opt.search.empty()) {
         std::snprintf(searchBuf_, sizeof searchBuf_, "%s", opt.search.c_str());
@@ -323,6 +326,7 @@ bool App::runQuery(const std::string& q) {
         double c = double(h.pos) - 0.5;
         jumpTo(ci, c - 100, c + 100);  // ~200 bp of context
         pinned_ = {true, ci, h.pos - 1, false};
+        lastRs_ = h;
         return true;
     }
     auto hits = genes_.search(q, 8);
@@ -543,6 +547,7 @@ void App::drawSearch(float w) {
                 double c = double(r.rs.pos) - 0.5;
                 jumpTo(rci, c - 100, c + 100);  // ~200 bp of context
                 pinned_ = {true, rci, r.rs.pos - 1, false};
+                lastRs_ = r.rs;
             }
             searchOpen_ = false;
             ImGui::SetWindowFocus(nullptr);
@@ -574,42 +579,118 @@ void App::drawSearch(float w) {
     if (!searchOpen_) dropA_ = dropB_ = ImVec2(-1, -1);
 }
 
+std::string App::rsidSizeStr() const { return kRsidPackSize; }
+
+App::~App() {
+    if (dlThread_.joinable()) dlThread_.detach();  // the build script keeps running; its output lands in data/packs
+}
+
+void App::startPackDownload() {
+    if (dlState_ == 1) return;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::string script;
+    if (const char* env = std::getenv("WISP_RSID_SCRIPT")) script = env;  // testing hook
+    for (auto c : {opt_.dataDir + "/../scripts/fetch_rsid_pack.sh", std::string("scripts/fetch_rsid_pack.sh")})
+        if (script.empty() && fs::exists(c, ec)) script = fs::absolute(c, ec).string();
+    if (script.empty()) { std::lock_guard<std::mutex> l(dlMu_); dlMsg_ = "fetch_rsid_pack.sh not found"; dlState_ = 3; return; }
+    std::string data = fs::absolute(opt_.dataDir, ec).string();
+    dlState_ = 1; dlBytes_ = 0; dlTotal_ = 0; dlPhase_ = 0;
+    if (dlThread_.joinable()) dlThread_.join();
+    dlThread_ = std::thread([this, script, data] {
+        std::string cmd = "bash '" + script + "' '" + data + "' 2>&1";
+        FILE* pp = popen(cmd.c_str(), "r");
+        if (!pp) { std::lock_guard<std::mutex> l(dlMu_); dlMsg_ = "could not start the build script"; dlState_ = 3; return; }
+        char line[512];
+        std::string last;
+        while (std::fgets(line, sizeof line, pp)) {
+            long long b = 0, t = 0;
+            if (std::sscanf(line, "PROGRESS %lld %lld", &b, &t) == 2) { dlBytes_ = b; dlTotal_ = t; continue; }
+            if (!std::strncmp(line, "PHASE sort", 10)) dlPhase_ = 1;
+            else if (!std::strncmp(line, "PHASE index", 11)) dlPhase_ = 2;
+            last = line;
+        }
+        int rc = pclose(pp);
+        std::lock_guard<std::mutex> l(dlMu_);
+        if (rc == 0) dlState_ = 2;
+        else { dlMsg_ = last.empty() ? "build failed" : last; dlState_ = 3; }
+    });
+}
+
 void App::drawPackCard(ImVec2 D) {
+    // reopen the pack once a background build finished
+    if (dlState_ == 2 && !rsid_.present()) {
+        std::string rp = opt_.rsidPack.empty() ? opt_.dataDir + "/packs/rsid/rsid.idx" : opt_.rsidPack;
+        rsid_.open(rp);
+    }
     if (!packCard_) return;
-    // minimal first-run download card, showing only the optional rsID pack
+    // first-run style download card, showing only the optional rsID pack
     ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), D, col(kBg, 0.55f));  // dims the root window only
     searchOpen_ = false;
-    const float w = 460, h = 236;
-    ImGui::SetNextWindowPos(ImVec2((D.x - w) * 0.5f, (D.y - h) * 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(w, h));
+    const float w = 480;
+    ImGui::SetNextWindowPos(ImVec2((D.x - w) * 0.5f, D.y * 0.28f));
+    ImGui::SetNextWindowSize(ImVec2(w, 0));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, vec(kPanel));
     ImGui::PushStyleColor(ImGuiCol_Border, vec(kBorder));
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vec(kAccent));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, vec(kHover));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 16));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
-    ImGui::Begin("##packcard", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::Begin("##packcard", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                            ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushFont(fonts().monoSmall);
     ImGui::TextColored(vec(kMuted), "OPTIONAL DOWNLOAD");
     ImGui::PopFont();
     ImGui::PushFont(fonts().uiBold);
     ImGui::Text("Common variants (rsID search)");
     ImGui::PopFont();
-    ImGui::TextColored(vec(kText, 0.9f), "%s on disk, %s rsIDs", kRsidPackSize, kRsidPackCount);
+    ImGui::SameLine(w - 16 - ImGui::CalcTextSize(kRsidPackSize).x - 16);
+    ImGui::PushFont(fonts().mono);
+    ImGui::TextColored(vec(kText), "%s", kRsidPackSize);
+    ImGui::PopFont();
     ImGui::PushTextWrapPos(w - 16);
-    ImGui::TextColored(vec(kMuted), "dbSNP 155 on T2T-CHM13 (UCSC), common variants only (minor allele >= 1%% in any 1000 Genomes population). "
-                                    "Built by streaming the %s source file; nothing else is kept.", kRsidPackStream);
+    ImGui::TextColored(vec(kMuted), "%s rsIDs from dbSNP 155 on T2T-CHM13 (UCSC), common variants only (minor allele >= 1%% in any "
+                                    "1000 Genomes population). Built by streaming the %s source file; only the index is kept.",
+                       kRsidPackCount, kRsidPackStream);
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
-    ImGui::PushFont(fonts().mono);
-    ImGui::TextColored(vec(kAccent), "scripts/fetch_rsid_pack.sh");
-    ImGui::PopFont();
+    int st = dlState_;
+    if (rsid_.present()) {
+        ImGui::TextColored(vec(kAccent), "Installed. Type an rs number in the search box.");
+    } else if (st == 1) {
+        long long b = dlBytes_, t = dlTotal_;
+        int ph = dlPhase_;
+        float frac = ph == 0 ? (t > 0 ? float(double(b) / double(t)) : 0.f) : 1.f;
+        char over[96];
+        if (ph == 0) std::snprintf(over, sizeof over, "Downloading %.1f / %.1f GB", b / 1e9, t / 1e9);
+        else std::snprintf(over, sizeof over, ph == 1 ? "Sorting rsIDs..." : "Writing index...");
+        ImGui::ProgressBar(frac, ImVec2(w - 32, 20), over);
+    } else {
+        if (st == 3) { std::lock_guard<std::mutex> l(dlMu_); ImGui::TextColored(vec(0xE8A13A), "Failed: %s", dlMsg_.c_str()); }
+        ImGui::PushStyleColor(ImGuiCol_Button, vec(kAccent));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, vec(0x9AD3FF));
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(kBg));
+        if (ImGui::Button(st == 3 ? "Retry download" : "Download", ImVec2(140, 30))) startPackDownload();
+        ImGui::PopStyleColor(3);
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(vec(kMuted), "runs in the background; needs bcftools");
+    }
     ImGui::Spacing();
-    if (ImGui::Button("Copy command")) ImGui::SetClipboardText("scripts/fetch_rsid_pack.sh");
-    ImGui::SameLine();
-    if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape)) packCard_ = false;
+    ImGui::SetNextItemOpen(manualOpen_, ImGuiCond_Always);
+    manualOpen_ = ImGui::TreeNodeEx("Manual install", ImGuiTreeNodeFlags_NoTreePushOnOpen);
+    if (manualOpen_) {
+        ImGui::PushFont(fonts().mono);
+        ImGui::TextColored(vec(kAccent), "scripts/fetch_rsid_pack.sh");
+        ImGui::PopFont();
+        if (ImGui::SmallButton("Copy command")) ImGui::SetClipboardText("scripts/fetch_rsid_pack.sh");
+    }
+    ImGui::Spacing();
+    if (ImGui::Button(st == 1 ? "Hide" : "Close") || ImGui::IsKeyPressed(ImGuiKey_Escape)) packCard_ = false;
     ImGui::End();
     ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(2);
+    ImGui::PopStyleColor(4);
 }
 
 void App::drawTopBar(ImDrawList* dl, float w) {
@@ -1670,6 +1751,30 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
                 ImGui::PushFont(fonts().monoSmall);
                 ImGui::TextColored(vec(kMuted, 0.8f), "multi-allelic site: %d ALT alleles", vars.front()->alleleCount);
                 ImGui::PopFont();
+            }
+        }
+
+        // ---------- dbSNP (rsID pack) for the rsID we jumped to ----------
+        if (lastRs_.rs && p.pos == lastRs_.pos - 1 && ov_.chroms()[p.ci].name == lastRs_.chrom) {
+            separator();
+            heading("DBSNP  (common-variant pack)");
+            ImGui::PushFont(fonts().mono);
+            ImGui::TextColored(vec(kText, 0.95f), "rs%u  %s>%s", lastRs_.rs, lastRs_.ref.c_str(), lastRs_.alt.c_str());
+            ImGui::PopFont();
+            if (lastRs_.dropped > 0) {
+                ImVec2 cp = ImGui::GetCursorScreenPos();
+                char t[96];
+                std::snprintf(t, sizeof t, "+%d rare allele%s in dbSNP", lastRs_.dropped, lastRs_.dropped == 1 ? "" : "s");
+                if (ImGui::InvisibleButton("##rare", ImVec2(W, ImGui::GetTextLineHeight() + 2))) rareOpen_ = !rareOpen_;
+                bool hov = ImGui::IsItemHovered();
+                unsigned cc = hov ? kAccent : 0x8A8F99;
+                ImVec2 c(cp.x + 5, cp.y + ImGui::GetTextLineHeight() * 0.5f + 1);
+                if (rareOpen_) cdl->AddTriangleFilled(ImVec2(c.x - 4, c.y - 2), ImVec2(c.x + 4, c.y - 2), ImVec2(c.x, c.y + 3), U(cc));
+                else cdl->AddTriangleFilled(ImVec2(c.x - 2, c.y - 4), ImVec2(c.x - 2, c.y + 4), ImVec2(c.x + 3, c.y), U(cc));
+                cdl->AddText(ImVec2(cp.x + 16, cp.y), U(0x8A8F99), t);
+                if (rareOpen_)
+                    ImGui::TextColored(vec(kMuted), "dbSNP 155 lists %d more ALT allele%s here that 1000 Genomes never saw "
+                                                    "(frequency 0). They are left out of the pack.", lastRs_.dropped, lastRs_.dropped == 1 ? "" : "s");
             }
         }
 

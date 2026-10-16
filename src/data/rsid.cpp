@@ -11,11 +11,12 @@ bool RsidIndex::open(const std::string& path) {
     if (!f) return false;
     char magic[8];
     uint32_t nc = 0;
-    if (std::fread(magic, 1, 8, f) != 8 || std::memcmp(magic, "WISPRS1", 8) != 0 || std::fread(&nc, 4, 1, f) != 1 ||
+    if (std::fread(magic, 1, 8, f) != 8 || (std::memcmp(magic, "WISPRS1", 8) != 0 && std::memcmp(magic, "WISPRS2", 8) != 0) || std::fread(&nc, 4, 1, f) != 1 ||
         std::fread(&n_, 4, 1, f) != 1 || std::fread(&recOff_, 8, 1, f) != 1 || std::fread(&blobOff_, 8, 1, f) != 1) {
         std::fclose(f);
         return false;
     }
+    version_ = magic[6] - '0';
     for (uint32_t i = 0; i < nc; ++i) {
         unsigned char l = 0;
         if (std::fread(&l, 1, 1, f) != 1) { std::fclose(f); return false; }
@@ -47,6 +48,7 @@ bool RsidIndex::find(uint32_t rs, RsidHit& out) const {
             out.pos = r.pos;
             out.ref = al.substr(0, r.rl);
             out.alt = al.substr(r.rl);
+            out.dropped = version_ >= 2 ? r.pad : 0;
             return true;
         }
     }
