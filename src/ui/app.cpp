@@ -372,7 +372,16 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         double bpPerPx = double(ch.length) / sw;
         std::string label = ch.name.substr(0, 3) == "chr" ? ch.name.substr(3) : ch.name;
         ImVec2 ts = ImGui::CalcTextSize(label.c_str());
-        dl->AddText(ImVec2(sx0 - 6 - ts.x, y + (stripH - ts.y) * 0.5f), col(ci == viewCi_ ? kAccent : kMuted), label.c_str());
+        const bool isY = ch.name == "chrY";
+        float tagW = 0;
+        if (isY) {  // chrY in hs1 comes from HG002, not CHM13
+            ImGui::PushFont(fonts().monoTiny);
+            ImVec2 tg = ImGui::CalcTextSize("HG002");
+            tagW = tg.x + 4;
+            dl->AddText(ImVec2(sx0 - 6 - tg.x, y + (stripH - tg.y) * 0.5f), col(0x8A8F99), "HG002");
+            ImGui::PopFont();
+        }
+        dl->AddText(ImVec2(sx0 - 6 - tagW - ts.x, y + (stripH - ts.y) * 0.5f), col(ci == viewCi_ ? kAccent : kMuted), label.c_str());
         auto bx = [&](uint32_t b) { return sx0 + float(std::min<double>(double(b) * bin, double(ch.length)) / bpPerPx); };
         // bin colour: intron/repeat grey mix by share, blue over it by known share (x4), then fog by nothing share
         // (the fog layer is drawn by the noise shader so it keeps drifting)
@@ -414,6 +423,12 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, yb), col(cc[k]));
                 x += w;
             }
+            // not-in-GRCh38 share as hatching over the right end of the mini bar
+            float hw = float(miniW * std::clamp(ch.share(kNotIn), 0.0, 1.0));
+            if (hw >= 1.f) {
+                dl->AddRectFilled(ImVec2(mx + miniW - hw, y), ImVec2(mx + miniW, yb), col(kBg, 0.35f));
+                hatch(dl, mx + miniW - hw, y, mx + miniW, yb);
+            }
             if (ImGui::IsMouseHoveringRect(ImVec2(mx, y - 1), ImVec2(mx + miniW, yb + 1))) {
                 ImGui::BeginTooltip();
                 ImGui::PushFont(fonts().uiBold);
@@ -423,6 +438,7 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 ImGui::TextColored(vec(kMuted), "Introns + repeats  %.1f%%", 100 * sh[1]);
                 ImGui::Text("Nothing known  %.1f%%", 100 * sh[2]);
                 ImGui::TextColored(vec(0xC9B6F2), "New in T2T (not in GRCh38)  %.1f%%", 100 * ch.share(kNotIn));
+                if (isY) ImGui::TextColored(vec(0x8A8F99), "From a different person (HG002); CHM13 has no Y.");
                 ImGui::EndTooltip();
             }
         }
