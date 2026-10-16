@@ -46,12 +46,12 @@ std::string pct(double f) {
 }
 // 1px lines 6px apart at 45 degrees, 70% opacity, clipped to the rect; aligned to a global grid so
 // neighbouring hatches line up.
-void hatch(ImDrawList* dl, float x0, float y0, float x1, float y1) {
+void hatch(ImDrawList* dl, float x0, float y0, float x1, float y1, float alpha = 0.7f) {
     if (x1 - x0 < 1.f) x1 = x0 + 1.f;
     dl->PushClipRect(ImVec2(x0, y0), ImVec2(x1, y1), true);
     float h = y1 - y0;
     float start = std::floor((x0 - h - y0) / 6.f) * 6.f + y0;
-    for (float x = start; x < x1 + 6.f; x += 6.f) dl->AddLine(ImVec2(x, y1), ImVec2(x + h, y0), col(kColNotIn, 0.7f), 1.f);
+    for (float x = start; x < x1 + 6.f; x += 6.f) dl->AddLine(ImVec2(x, y1), ImVec2(x + h, y0), col(kColNotIn, alpha), 1.f);
     dl->PopClipRect();
 }
 unsigned catColor(int c) {
@@ -373,15 +373,9 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         std::string label = ch.name.substr(0, 3) == "chr" ? ch.name.substr(3) : ch.name;
         ImVec2 ts = ImGui::CalcTextSize(label.c_str());
         const bool isY = ch.name == "chrY";
-        float tagW = 0;
-        if (isY) {  // chrY in hs1 comes from HG002, not CHM13
-            ImGui::PushFont(fonts().monoTiny);
-            ImVec2 tg = ImGui::CalcTextSize("HG002");
-            tagW = tg.x + 4;
-            dl->AddText(ImVec2(sx0 - 6 - tg.x, y + (stripH - tg.y) * 0.5f), col(0x8A8F99), "HG002");
-            ImGui::PopFont();
-        }
-        dl->AddText(ImVec2(sx0 - 6 - tagW - ts.x, y + (stripH - ts.y) * 0.5f), col(ci == viewCi_ ? kAccent : kMuted), label.c_str());
+        // chrY in hs1 comes from HG002, not CHM13: label in a quieter grey (see tooltip)
+        unsigned lc = ci == viewCi_ ? kAccent : isY ? 0x8A8F99 : kMuted;
+        dl->AddText(ImVec2(sx0 - 6 - ts.x, y + (stripH - ts.y) * 0.5f), col(lc), label.c_str());
         auto bx = [&](uint32_t b) { return sx0 + float(std::min<double>(double(b) * bin, double(ch.length)) / bpPerPx); };
         // bin colour: intron/repeat grey mix by share, blue over it by known share (x4), then fog by nothing share
         // (the fog layer is drawn by the noise shader so it keeps drifting)
@@ -425,9 +419,9 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             }
             // not-in-GRCh38 share as hatching over the right end of the mini bar
             float hw = float(miniW * std::clamp(ch.share(kNotIn), 0.0, 1.0));
-            if (hw >= 1.f) {
+            if (ch.share(kNotIn) >= 0.025) {  // < 2.5% would be under 1 px
                 dl->AddRectFilled(ImVec2(mx + miniW - hw, y), ImVec2(mx + miniW, yb), col(kBg, 0.35f));
-                hatch(dl, mx + miniW - hw, y, mx + miniW, yb);
+                hatch(dl, mx + miniW - hw, y, mx + miniW, yb, 1.f);
             }
             if (ImGui::IsMouseHoveringRect(ImVec2(mx, y - 1), ImVec2(mx + miniW, yb + 1))) {
                 ImGui::BeginTooltip();
