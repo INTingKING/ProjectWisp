@@ -161,6 +161,7 @@ private:
     long long packBytes(const std::string& pack) const;
     bool packInstalled(const std::string& pack) const;
     void startDownload(const std::string& pack);
+    std::vector<std::string> dlQueue_;  // 'Download all': packs still to fetch
     std::mutex dlMu_;
     std::string dlMsg_;
     bool manualOpen_ = false;
@@ -187,7 +188,10 @@ private:
     double svMs_ = 0;  // last SV-track draw time (shot mode reports it)
 public:
     double svMs() const { return svMs_; }
-    bool tilesPending() const { return store_.pending() > 0; }
+    // script mode also holds the virtual clock while a download whose virtual progress is complete is still running for real,
+    // so the moment it lands (phone first run) is the same virtual frame on every run
+    bool tilesPending() const { return store_.pending() > 0 || dlHeld(); }
+    bool dlHeld() const;
     void setVirtualClock(double t) { virtualClock_ = t; }  // --script: app time comes from the script, not frame deltas
 private:
     // 5th/95th percentile of per-bin share (known = exon+cCRE, nothing), for overview contrast stretch

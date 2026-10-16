@@ -28,6 +28,7 @@ static const char* kStorageNote = "Stored inside the app; uninstalling deletes i
 using namespace theme;
 
 namespace {
+std::string mbStr(long long b);
 
 constexpr int64_t kTrackMaxSpan = 3'000'000;  // above this the region view uses the 100 kb summary
 constexpr float kCardW = 380.f, kMargin = 16.f, kOverviewH = 220.f, kTopBarH = 56.f;
@@ -632,15 +633,16 @@ void App::drawSearch(float w) {
         fg->AddText(fonts().mono, 13, ImVec2(r0.x + 8 + lw + 10, ty + 1), col(0x8A8F99), rw.sub.c_str());
         float px = r1.x - 4;
         auto pill = [&](const std::string& t, bool extra) {
-            float tw = fonts().monoSmall->CalcTextSizeA(11, FLT_MAX, 0, t.c_str()).x;
+            const float pfs = opt_.phone ? 12.f : 11.f;
+            float tw = fonts().monoSmall->CalcTextSizeA(pfs, FLT_MAX, 0, t.c_str()).x;
             ImVec2 p0(px - tw - 10, r0.y + (rh - 16) * 0.5f), p1(px, r0.y + (rh - 16) * 0.5f + 16);  // 16 tall, centred in the row
             if (extra) {
                 fg->AddRectFilled(p0, p1, col(0x8A8F99, 0.18f), 8);
                 fg->AddRect(p0, p1, col(0x8A8F99), 8);
-                fg->AddText(fonts().monoSmall, 11, ImVec2(p0.x + 5, p0.y + 1), col(0x8A8F99), t.c_str());
+                fg->AddText(fonts().monoSmall, pfs, ImVec2(p0.x + 5, p0.y + 1), col(0x8A8F99), t.c_str());
             } else {
                 fg->AddRectFilled(p0, p1, col(kBorder), 8);
-                fg->AddText(fonts().monoSmall, 11, ImVec2(p0.x + 5, p0.y + 1), col(kMuted), t.c_str());
+                fg->AddText(fonts().monoSmall, pfs, ImVec2(p0.x + 5, p0.y + 1), col(kMuted), t.c_str());
             }
             px = p0.x - 4;
         };
@@ -1213,8 +1215,9 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     auto laneLabel = [&](float ly, float lh, const char* t) {
         if (phone) {  // 11 dp labels in the 56 dp gutter; "Not in GRCh38" wraps
             ImGui::PushFont(fonts().uiSmall);
-            ImVec2 ls = ImGui::CalcTextSize(t, nullptr, false, gutter);
-            dl->AddText(nullptr, 0.f, ImVec2(A.x + 8, ly + (lh - ls.y) * 0.5f), col(kMuted), t, nullptr, gutter);
+            const float lw = tx0 - A.x - 6;  // 58 dp: the 56 dp gutter plus the panel inset
+            ImVec2 ls = ImGui::CalcTextSize(t, nullptr, false, lw);
+            dl->AddText(nullptr, 0.f, ImVec2(A.x + 4, ly + (lh - ls.y) * 0.5f), col(kMuted), t, nullptr, lw);
             ImGui::PopFont();
             return;
         }
@@ -1278,7 +1281,20 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
 
     // sequence lane
     laneLabel(seqY, seqH, "Sequence");
-    if (span <= 20000) {
+    bool seqClaim = false;
+    if (phone && !genome_.present()) {  // genome pack missing: inline row that opens Downloads
+        std::string t = "Sequence not installed (" + mbStr(packBytes("genome")) + "), get it";
+        ImGui::PushFont(fonts().ui13);
+        ImVec2 ls = ImGui::CalcTextSize(t.c_str());
+        ImVec2 p0(tx0, seqY + (seqH - ls.y) * 0.5f);
+        ImGui::SetCursorScreenPos(ImVec2(tx0, seqY + seqH * 0.5f - 22));
+        if (ImGui::InvisibleButton("##getgenome", ImVec2(std::min(W, ls.x + 8), 44))) phoneDownloads_ = true;
+        seqClaim = ImGui::IsItemHovered() || ImGui::IsItemActive() || ImGui::IsItemDeactivated();
+        dl->AddText(p0, col(0x8A8F99), t.c_str());
+        float tail = ImGui::CalcTextSize("get it").x;
+        dl->AddLine(ImVec2(p0.x + ls.x - tail, p0.y + ls.y), ImVec2(p0.x + ls.x, p0.y + ls.y), col(0x8A8F99));
+        ImGui::PopFont();
+    } else if (span <= 20000) {
         int64_t s = int64_t(viewS_), e = int64_t(std::ceil(viewE_));
         std::string seq = genome_.fetch(ch.name, s, e);
         ImGui::PushFont(fonts().mono);
@@ -1326,6 +1342,20 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         }
         int rows = std::max(1, int(rowEnd.size()));
         (void)rows;
+        // phone: skip labels that would overlap another label on the same row, longer genes first (tap still names it)
+        std::set<const Gene*> showLabel;
+        {
+            std::vector<std::pair<int, const Gene*>> byLen = placed;
+            std::stable_sort(byLen.begin(), byLen.end(), [](auto& a, auto& b) { return a.second->e - a.second->s > b.second->e - b.second->s; });
+            std::vector<std::tuple<int, float, float>> taken;
+            for (auto& [row, g] : byLen) {
+                float lx = std::clamp(X(double(g->s)), tx0, std::max(tx0, tx1 - 60));
+                float lx1 = lx + ImGui::CalcTextSize(g->name.c_str()).x;
+                bool clash = false;
+                for (auto& [r2, a, b] : taken) clash |= r2 == row && lx < b + 4 && a < lx1 + 4;
+                if (!phone || !clash) { showLabel.insert(g); taken.push_back({row, lx, lx1}); }
+            }
+        }
         for (auto& [row, g] : placed) {
             float ry = geneY + row * rowH;
             float gx0 = X(double(g->s)), gx1 = std::max(X(double(g->e)), gx0 + 1);
@@ -1343,7 +1373,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 dl->AddRect(ImVec2(std::max(gx0, tx0) - 3, ry - 1), ImVec2(std::min(gx1, tx1) + 3, ry + rowH - 2), col(kAccent, a), 3, 0, 1.5f);
             }
             float lx = std::clamp(gx0, tx0, std::max(tx0, tx1 - 60));
-            dl->AddText(ImVec2(lx, ry + 1), col(kText, 0.9f), g->name.c_str());
+            if (showLabel.count(g)) dl->AddText(ImVec2(lx, ry + 1), col(kText, 0.9f), g->name.c_str());
         }
         for (auto* x : vis.exons) {
             auto it = byName.find(x->gene);
@@ -1372,7 +1402,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
 
     // cCREs, repeats, not-in-GRCh38
     const float ccreY = y + hdrH, repY = ccreY + ccreH + 6 + hdrH, niY = repY + repH + 6;
-    laneLabel(ccreY, ccreH, "Regulatory");
+    laneLabel(ccreY, ccreH, phone ? "cCREs" : "Regulatory");  // "Regulatory" is 61 dp at 12 sp: wider than the gutter
     // CpG methylation heat strip (4 px) at the bottom of the regulatory track: per-pixel mean, #2A2F3A -> #C9A6FF
     if (store_.hasMethyl()) {
         const float my0 = ccreY + ccreH - 4, my1 = ccreY + ccreH;
@@ -1398,7 +1428,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         }
     }
     laneLabel(repY, repH, "Repeats");
-    laneLabel(niY, niH, "Not in GRCh38");
+    laneLabel(niY, niH, phone ? "New in T2T" : "Not in GRCh38");
     if (detailed) {
         ImGui::PushFont(fonts().mono);
         for (auto* c : vis.ccres) {
@@ -1475,7 +1505,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // Expanded: greedy sub-rows, 6 px + 1 px gap, max 8 rows, '+N more' for overflow.
     const float svH = svExpanded_ ? std::max(20.f * ts, svRowsLast_ * 7.f - 1.f + 6.f) : 20.f * ts;
     const float svHdrY = varY + varH + 6, svY = svHdrY + hdrH;
-    bool uiClaim = false;  // a UI control under the mouse consumes it: no map hover, pan or pin
+    bool uiClaim = seqClaim;  // a UI control under the mouse consumes it: no map hover, pan or pin
     auto svT0 = std::chrono::steady_clock::now();
     laneLabel(svY, std::min(svH, 20.f * ts), "SVs");
     {  // expand / collapse chevron at the right of the header line (44 dp touch target on phones)
@@ -1796,7 +1826,7 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
         separator();
         heading("THIS 100 KB BIN");
         uint32_t bin = uint32_t(p.pos / ov_.binSize());
-        const char* names[kCatCount] = {"Exons", "cCREs", "Introns", "Repeats", "Nothing known", "Not in GRCh38"};
+        const char* names[kCatCount] = {"Exons", "cCREs", "Introns", "Repeats", "Nothing known", opt_.phone ? "New in T2T" : "Not in GRCh38"};
         for (int k = 0; k < kCatCount; ++k) {
             float f = ov_.frac(p.ci, bin, Cat(k));
             ImVec2 cp = ImGui::GetCursorScreenPos();
@@ -2275,7 +2305,7 @@ void App::drawLegend(ImVec2 A, ImVec2 B, FogRenderer& fog) {
     }
 
     group("OVERLAYS");
-    row("Not in GRCh38", "New in T2T; most annotations miss it", [](ImDrawList* d, float a, float b, float x1, float y1) {
+    row(opt_.phone ? "New in T2T" : "Not in GRCh38", opt_.phone ? "Not in GRCh38; most annotations miss it" : "New in T2T; most annotations miss it", [](ImDrawList* d, float a, float b, float x1, float y1) {
         notInFill(d, a, b, x1, y1);
         hatch(d, a, b, x1, y1);
     });
@@ -2488,6 +2518,12 @@ long long App::shownDlBytes(int& phase) const {
     return b;
 }
 
+bool App::dlHeld() const {
+    if (virtualClock_ < 0 || dlState_ != 1) return false;
+    int ph = 0;
+    return shownDlBytes(ph) >= dlTotal_;
+}
+
 void App::phonePinch() {
     if (fingers_.size() < 2) { pinching_ = false; return; }
     auto it = fingers_.begin();
@@ -2685,6 +2721,35 @@ void App::drawDataScreen(ImVec2 D, bool firstRun) {
     ImGui::TextColored(vec(kText), "Core %s, everything %s", mbStr(packBytes("core")).c_str(), mbStr(all).c_str());
     ImGui::PopFont();
     ImGui::TextColored(vec(0x8A8F99), "%s", kStorageNote);  // shown right after the total size
+    ImGui::Dummy(ImVec2(0, 4));
+    auto outlined = [&](const char* label, ImVec2 sz) {  // secondary button: outline, #E6E8EC text
+        ImGui::PushStyleColor(ImGuiCol_Button, vec(kBg, 0.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, vec(kHover));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, vec(0x2D3340));
+        ImGui::PushStyleColor(ImGuiCol_Border, vec(kMuted));
+        ImGui::PushStyleColor(ImGuiCol_Text, vec(kText));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+        bool hit = ImGui::Button(label, sz);
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(5);
+        return hit;
+    };
+    {
+        std::vector<std::string> missing;
+        for (const PackInfo& pi : kPackInfo)
+            if (packBytes(pi.id) && !packInstalled(pi.id) && !(std::string(pi.id) == "rsid" && rsid_.present())) missing.push_back(pi.id);
+        std::string lbl = "Download all (" + mbStr(all) + ")";
+        ImGui::BeginDisabled(dlState_ == 1 || missing.empty() || !dlQueue_.empty());
+        if (outlined(lbl.c_str(), ImVec2(W, 44)) && !missing.empty()) {
+            dlQueue_.assign(missing.begin() + 1, missing.end());
+            startDownload(missing.front());
+        }
+        ImGui::EndDisabled();
+        ImGui::PushFont(fonts().ui13);
+        ImGui::TextColored(vec(kMuted), "Use Wi-Fi for big packs.");
+        ImGui::PopFont();
+    }
     ImGui::Dummy(ImVec2(0, 8));
     const bool coreOk = packInstalled("core");
     const int st = dlState_;
@@ -2737,8 +2802,11 @@ void App::drawDataScreen(ImVec2 D, bool firstRun) {
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, vec(0x9AD3FF));
                 ImGui::PushStyleColor(ImGuiCol_Text, vec(kBg));
             }
-            if (ImGui::Button(mine && st == 3 ? "Retry" : "Download", ImVec2(140, 44))) startDownload(pi.id);
-            if (primary) ImGui::PopStyleColor(3);
+            const char* bl = mine && st == 3 ? "Retry" : "Download";
+            if (primary) {
+                if (ImGui::Button(bl, ImVec2(140, 44))) startDownload(pi.id);
+                ImGui::PopStyleColor(3);
+            } else if (outlined(bl, ImVec2(140, 44))) startDownload(pi.id);
             ImGui::EndDisabled();
         }
         ImGui::Unindent(12);
@@ -2768,8 +2836,20 @@ void App::framePhone(FogRenderer& fog) {
     hover_ = {};
     if (virtualClock_ >= 0) clock_ = virtualClock_;
     else clock_ += io.DeltaTime;
+    int vph = 0;
+    const bool landed = dlState_ == 2 && (virtualClock_ < 0 || shownDlBytes(vph) >= dlTotal_);  // script: on the virtual clock
+    if (landed && !dlQueue_.empty()) {  // 'Download all': next pack
+        if (needData_ && dlPack_ == "core") {}  // load the map first (below), the queue continues next frame
+        else {
+            if (dlPack_ == "rsid" && !rsid_.present()) rsid_.open(opt_.rsidPack.empty() ? opt_.dataDir + "/packs/rsid/rsid.idx" : opt_.rsidPack);
+            std::string next = dlQueue_.front();
+            dlQueue_.erase(dlQueue_.begin());
+            startDownload(next);
+        }
+    }
+    if (dlState_ == 3) dlQueue_.clear();
     if (needData_ || phoneDownloads_) {
-        if (needData_ && dlState_ == 2 && dlPack_ == "core") {  // core tracks arrived: load them and show the map
+        if (needData_ && landed && dlPack_ == "core") {  // core tracks arrived: load them and show the map
             std::string err;
             if (!initData(err)) {
                 std::lock_guard<std::mutex> l(dlMu_);

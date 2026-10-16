@@ -271,7 +271,7 @@ int main(int argc, char** argv) {
 #else
     opt.assetsDir = findAssets(argv[0]);
 #endif
-    theme::apply(opt.assetsDir.c_str(), density);
+    theme::apply(opt.assetsDir.c_str(), density, opt.phone);
     if (window) ImGui_ImplSDL3_InitForVulkan(window);
     ImGui_ImplVulkan_InitInfo ii{};
     ii.ApiVersion = VK_API_VERSION_1_1;

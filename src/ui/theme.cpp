@@ -10,7 +10,8 @@ Fonts& fonts() {
     return f;
 }
 
-bool apply(const char* assetDir, float density) {
+bool apply(const char* assetDir, float density, bool phone) {
+    const float small = phone ? 12.f : 11.f, tiny = phone ? 12.f : 9.f;
     ImGuiIO& io = ImGui::GetIO();
     std::string d = std::string(assetDir) + "/fonts/";
     ImFontConfig cfg;
@@ -19,13 +20,13 @@ bool apply(const char* assetDir, float density) {
     cfg.RasterizerDensity = density;  // phone: glyphs rasterised at the framebuffer scale (layout stays in dp)
     Fonts& f = fonts();
     f.ui = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 15.f, &cfg);
-    f.uiSmall = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 11.f, &cfg);
+    f.uiSmall = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), small, &cfg);
     f.ui13 = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 13.f, &cfg);
     f.uiBold = io.Fonts->AddFontFromFileTTF((d + "Inter-SemiBold.ttf").c_str(), 15.f, &cfg);
     f.title = io.Fonts->AddFontFromFileTTF((d + "Inter-SemiBold.ttf").c_str(), 20.f, &cfg);
     f.mono = io.Fonts->AddFontFromFileTTF((d + "JetBrainsMono-Regular.ttf").c_str(), 13.f, &cfg);
-    f.monoSmall = io.Fonts->AddFontFromFileTTF((d + "JetBrainsMono-Regular.ttf").c_str(), 11.f, &cfg);
-    f.monoTiny = io.Fonts->AddFontFromFileTTF((d + "JetBrainsMono-Regular.ttf").c_str(), 9.f, &cfg);
+    f.monoSmall = io.Fonts->AddFontFromFileTTF((d + "JetBrainsMono-Regular.ttf").c_str(), small, &cfg);
+    f.monoTiny = io.Fonts->AddFontFromFileTTF((d + "JetBrainsMono-Regular.ttf").c_str(), tiny, &cfg);
     bool ok = f.monoTiny && f.monoSmall && f.ui && f.uiBold && f.title && f.mono;
     if (!ok) {
         std::fprintf(stderr, "warning: fonts not found under %s, using ImGui default\n", d.c_str());

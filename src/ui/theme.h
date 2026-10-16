@@ -27,6 +27,6 @@ struct Fonts {
     ImFont* monoTiny = nullptr;   // JetBrains Mono 9
 };
 Fonts& fonts();
-bool apply(const char* assetDir, float density = 1.f);
+bool apply(const char* assetDir, float density = 1.f, bool phone = false);  // phone: 12 sp minimum text
 
 }  // namespace wisp::theme

@@ -17,6 +17,9 @@ public:
 
 private:
     faidx_t* fai_ = nullptr;
+public:
+    bool present() const { return fai_ != nullptr; }
+private:
     std::mutex mu_;
     std::string cChrom_, cSeq_;
     int64_t cS_ = 0, cE_ = 0;
