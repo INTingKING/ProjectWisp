@@ -286,11 +286,21 @@ int main(int argc, char** argv) {
                     else std::fprintf(stderr, "script: unknown command '%s'\n", c.op.c_str());
                 }
             };
+            // --script determinism: a virtual clock advances a fixed 1/60 s per frame. If a frame requested tiles that
+            // are still loading, the next frame is a "settle" frame: same virtual time, no script step, no input,
+            // until the loader is done, so every advancing frame sees the same data on every run.
+            int vframe = 0;
+            bool settling = false;
+            if (scripted) io.ConfigInputTextCursorBlink = false;
             while (running) {
-                if (scripted) {
+                if (scripted && !settling) {
                     stepScript();
                     SDL_Event e;
                     while (SDL_PollEvent(&e)) feedImGui(e, io);
+                }
+                if (scripted) {
+                    while (settling && app.tilesPending()) SDL_Delay(1);  // let loader threads finish
+                    app.setVirtualClock(double(vframe) / 60.0);
                 }
                 if (window) {
                     SDL_Event e;
@@ -306,12 +316,12 @@ int main(int argc, char** argv) {
                     ImGui_ImplSDL3_NewFrame();
                 } else {
                     io.DisplaySize = ImVec2(float(W), float(H));
-                    io.DeltaTime = 1.f / 60.f;
+                    io.DeltaTime = (scripted && settling) ? 1e-6f : 1.f / 60.f;
                     if (!scripted) io.MousePos = ImVec2(mouseX, mouseY);
                 }
                 ImGui::NewFrame();
                 float secs = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
-                float t = offscreen ? shotTime : secs;
+                float t = scripted ? shotTime + float(vframe) / 60.f : offscreen ? shotTime : secs;
                 ImVec2 drift = app.reducedMotion() ? ImVec2(0, 0) : ImVec2(6.f, 2.f);  // px/s
                 fog.beginFrame(t, drift, io.DisplaySize);
                 app.frame(fog);
@@ -324,6 +334,13 @@ int main(int argc, char** argv) {
                 vk.endFrame();
                 if (scripted) {
                     ++frame;
+                    bool wasSettling = settling;
+                    settling = app.tilesPending();
+                    if (settling || wasSettling) {
+                        // this frame's pixels may lack tiles: re-render at the same virtual time once they arrive
+                        if (settling) continue;
+                    }
+                    ++vframe;
                     idleFrames = app.idle() ? idleFrames + 1 : 0;
                     if (waitFrames > 0) --waitFrames;
                     if (waitIdle && (idleFrames >= 3 || secs > 120.f)) waitIdle = false;

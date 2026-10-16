@@ -114,7 +114,8 @@ private:
     std::string openGroup_;  // extra-copy group opened via "+N copies" (sticky header in the expanded list)
     int scrollToGroup_ = 0;  // >0: next frame scroll so the group main row is (n-1) rows above the top
     ImVec2 dropA_{-1, -1}, dropB_{-1, -1};  // dropdown rect (blocks region hover/click under it)
-    double clock_ = 0;  // app time (s), advanced by io.DeltaTime
+    double clock_ = 0;
+    double virtualClock_ = -1;  // app time (s), advanced by io.DeltaTime
     bool animating_ = false;
     double animT0_ = 0, animS0_ = 0, animE0_ = 0, animS1_ = 0, animE1_ = 0;
     std::string hlName_, hlChrom_;
@@ -126,6 +127,8 @@ private:
     double svMs_ = 0;  // last SV-track draw time (shot mode reports it)
 public:
     double svMs() const { return svMs_; }
+    bool tilesPending() const { return store_.pending() > 0; }
+    void setVirtualClock(double t) { virtualClock_ = t; }  // --script: app time comes from the script, not frame deltas
 private:
     // 5th/95th percentile of per-bin share (known = exon+cCRE, nothing), for overview contrast stretch
     float knownP5_ = 0, knownP95_ = 1, nothingP5_ = 0, nothingP95_ = 1;

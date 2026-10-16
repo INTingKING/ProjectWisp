@@ -269,7 +269,8 @@ void App::frame(FogRenderer& fog) {
     ImGui::PopStyleVar();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     hover_ = {};
-    clock_ += io.DeltaTime;
+    if (virtualClock_ >= 0) clock_ = virtualClock_;
+    else clock_ += io.DeltaTime;
     if (animating_) {  // 300 ms ease-out pan+zoom
         double t = std::clamp((clock_ - animT0_) / 0.3, 0.0, 1.0);
         double k = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
