@@ -1,4 +1,7 @@
 #define VMA_IMPLEMENTATION
+#ifndef WISP_VK_MINOR
+#define WISP_VK_MINOR 1  // desktop: Vulkan 1.1; Android spike builds with 0 (Vulkan 1.0)
+#endif
 #include "render/vk_context.h"
 
 #include <SDL3/SDL.h>
@@ -18,7 +21,7 @@ bool VkContext::init(SDL_Window* window, uint32_t w, uint32_t h, std::string& er
     framesInFlight_ = window ? 2 : 1;
 
     vkb::InstanceBuilder ib;
-    ib.set_app_name("ProjectWisp").require_api_version(1, 1, 0);
+    ib.set_app_name("ProjectWisp").require_api_version(1, WISP_VK_MINOR, 0);
     if (!window) {
         ib.set_headless(true);
     } else {
@@ -36,7 +39,7 @@ bool VkContext::init(SDL_Window* window, uint32_t w, uint32_t h, std::string& er
         return false;
     }
     vkb::PhysicalDeviceSelector sel(vkbInstance);
-    sel.set_minimum_version(1, 1).prefer_gpu_device_type(vkb::PreferredDeviceType::discrete).allow_any_gpu_device_type(true);
+    sel.set_minimum_version(1, WISP_VK_MINOR).prefer_gpu_device_type(vkb::PreferredDeviceType::discrete).allow_any_gpu_device_type(true);
     if (window) sel.set_surface(surface_);
     auto pr = sel.select();
     if (!pr) { err = "vkb physical device: " + pr.error().message(); return false; }
@@ -55,7 +58,7 @@ bool VkContext::init(SDL_Window* window, uint32_t w, uint32_t h, std::string& er
     ai.physicalDevice = physical;
     ai.device = device;
     ai.instance = vkbInstance.instance;
-    ai.vulkanApiVersion = VK_API_VERSION_1_1;
+    ai.vulkanApiVersion = VK_MAKE_API_VERSION(0, 1, WISP_VK_MINOR, 0);
     if (vmaCreateAllocator(&ai, &vma) != VK_SUCCESS) { err = "vmaCreateAllocator failed"; return false; }
 
     if (window) {

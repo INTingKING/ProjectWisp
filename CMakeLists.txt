@@ -6,15 +6,24 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 include(FetchContent)
+if(ANDROID)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # static deps linked into libmain.so
+  set(VK_BOOTSTRAP_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
+endif()
 set(FETCHCONTENT_QUIET ON)
 
 find_package(Vulkan REQUIRED)
 find_program(GLSLANG_VALIDATOR NAMES glslangValidator glslang REQUIRED
-  HINTS $ENV{VULKAN_SDK}/bin)
+  HINTS $ENV{VULKAN_SDK}/bin NO_CMAKE_FIND_ROOT_PATH)
 
 # ---- third-party (FetchContent) ----
-set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-set(SDL_STATIC ON CACHE BOOL "" FORCE)
+if(ANDROID)  # SDLActivity loads libSDL3.so + libmain.so
+  set(SDL_SHARED ON CACHE BOOL "" FORCE)
+  set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+else()
+  set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+  set(SDL_STATIC ON CACHE BOOL "" FORCE)
+endif()
 set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
@@ -36,8 +45,18 @@ target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/
 target_link_libraries(imgui PUBLIC SDL3::SDL3 Vulkan::Vulkan)
 
 # ---- htslib: system package via pkg-config (libhts-dev / brew htslib / vcpkg htslib) ----
+if(ANDROID)
+  # cross-built static htslib (--disable-libcurl --disable-bz2 --disable-lzma, NDK zlib): see android/README.md
+  set(WISP_ANDROID_HTS_ROOT "" CACHE PATH "prefix with include/htslib and lib/libhts.a for this ABI")
+  add_library(hts_android STATIC IMPORTED)
+  set_target_properties(hts_android PROPERTIES IMPORTED_LOCATION ${WISP_ANDROID_HTS_ROOT}/lib/libhts.a
+    INTERFACE_INCLUDE_DIRECTORIES ${WISP_ANDROID_HTS_ROOT}/include INTERFACE_LINK_LIBRARIES "z;m")
+  add_library(PkgConfig::HTS ALIAS hts_android)
+  set(HTS_FOUND TRUE)
+else()
 find_package(PkgConfig)
-if(PkgConfig_FOUND)
+endif()
+if(NOT ANDROID AND PkgConfig_FOUND)
   pkg_check_modules(HTS IMPORTED_TARGET htslib)
 endif()
 if(NOT HTS_FOUND)
@@ -53,18 +72,25 @@ if(NOT HTS_FOUND)
 endif()
 
 # ---- shaders -> embedded SPIR-V headers ----
-set(SHADER_OUT ${CMAKE_BINARY_DIR}/shaders)
+set(SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SHADER_OUT})
 set(SHADER_HEADERS)
 foreach(S fog.vert fog.frag)
   string(REPLACE "." "_" VAR ${S})
   add_custom_command(OUTPUT ${SHADER_OUT}/${S}.h
-    COMMAND ${GLSLANG_VALIDATOR} -V --vn ${VAR}_spv -o ${SHADER_OUT}/${S}.h ${CMAKE_SOURCE_DIR}/src/shaders/${S}
-    DEPENDS ${CMAKE_SOURCE_DIR}/src/shaders/${S})
+    COMMAND ${GLSLANG_VALIDATOR} -V --vn ${VAR}_spv -o ${SHADER_OUT}/${S}.h ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${S}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${S})
   list(APPEND SHADER_HEADERS ${SHADER_OUT}/${S}.h)
 endforeach()
 
-add_executable(wisp
+if(ANDROID)
+  add_library(wisp SHARED)
+  set_target_properties(wisp PROPERTIES OUTPUT_NAME main)
+  target_compile_definitions(wisp PRIVATE WISP_VK_MINOR=0 VMA_VULKAN_VERSION=1000000)  # Vulkan 1.0 baseline on Android (API 24 libvulkan exports 1.0 only)
+else()
+  add_executable(wisp)
+endif()
+target_sources(wisp PRIVATE
   src/main.cpp
   src/render/vk_context.cpp src/render/fog.cpp src/render/png_write.cpp
   src/data/overview.cpp src/data/tracks.cpp src/data/genome.cpp src/data/geneindex.cpp src/data/rsid.cpp
@@ -72,7 +98,7 @@ add_executable(wisp
   ${SHADER_HEADERS})
 target_include_directories(wisp PRIVATE src ${SHADER_OUT} ${stb_SOURCE_DIR} ${vma_SOURCE_DIR}/include)
 target_link_libraries(wisp PRIVATE imgui vk-bootstrap::vk-bootstrap Vulkan::Vulkan PkgConfig::HTS libBigWig::libbigwig)
-target_compile_definitions(wisp PRIVATE WISP_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets")
+target_compile_definitions(wisp PRIVATE WISP_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
 if(MSVC)
   target_compile_options(wisp PRIVATE /W3)
 else()

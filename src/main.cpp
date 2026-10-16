@@ -3,6 +3,9 @@
 //   wisp --legend (open the legend) | --intro (start the first-run intro) | --settings FILE (default ~/.config/projectwisp)
 //   wisp --shot out.png [--size 1600x1000] [--time 3.0] ...   (offscreen render, no window)
 #include <SDL3/SDL.h>
+#ifdef __ANDROID__
+#include <SDL3/SDL_main.h>  // renames main -> SDL_main for SDLActivity
+#endif
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
@@ -29,6 +32,35 @@ static std::string findAssets(const char* argv0) {
         if (fs::exists(p / "fonts", ec)) return p.string();
     return WISP_ASSET_DIR;
 }
+
+#ifdef __ANDROID__
+// Android: htslib/libBigWig need real file paths (no content:// URIs), so everything lives in app-specific storage.
+//   small files (fonts, data_release.conf): copied out of the APK into SDL_GetAndroidInternalStoragePath()/assets
+//   data + big packs: SDL_GetAndroidExternalStoragePath()/data (getExternalFilesDir, no storage permission needed)
+static std::string androidAssets() {
+    namespace fs = std::filesystem;
+    std::string dst = std::string(SDL_GetAndroidInternalStoragePath()) + "/assets";
+    std::error_code ec;
+    fs::create_directories(dst + "/fonts", ec);
+    for (const char* f : {"fonts/Inter-Regular.ttf", "fonts/Inter-SemiBold.ttf", "fonts/JetBrainsMono-Regular.ttf", "data_release.conf"}) {
+        std::string out = dst + "/" + f;
+        if (fs::exists(out, ec)) continue;
+        size_t n = 0;
+        void* buf = SDL_LoadFile(f, &n);  // relative paths read from the APK's assets/
+        if (!buf) continue;
+        if (FILE* o = std::fopen(out.c_str(), "wb")) { std::fwrite(buf, 1, n, o); std::fclose(o); }
+        SDL_free(buf);
+    }
+    return dst;
+}
+static std::string androidDataRoot() {  // stub data root; packs are fetched/copied here later
+    const char* ext = SDL_GetAndroidExternalStoragePath();
+    std::string root = std::string(ext ? ext : SDL_GetAndroidInternalStoragePath()) + "/data";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    return root;
+}
+#endif
 
 // ---------- --script FILE: replay SDL events through the normal event loop (offscreen) ----------
 // One command per line ('#' comments):
@@ -211,7 +243,12 @@ int main(int argc, char** argv) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
+#ifdef __ANDROID__
+    opt.assetsDir = androidAssets();
+    if (opt.dataDir == "data") opt.dataDir = androidDataRoot();
+#else
     opt.assetsDir = findAssets(argv[0]);
+#endif
     theme::apply(opt.assetsDir.c_str());
     if (window) ImGui_ImplSDL3_InitForVulkan(window);
     ImGui_ImplVulkan_InitInfo ii{};
