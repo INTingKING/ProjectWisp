@@ -1153,7 +1153,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     const auto& ch = ov_.chroms()[viewCi_];
     const bool phone = opt_.phone;
     const float ts = phone ? 1.5f : 1.f;  // phone: track heights x1.5, labels in a 56 dp gutter, hints hidden
-    const float gutter = phone ? 56 - 12 + 4 : 84;
+    const float gutter = phone ? 72 - 12 + 4 : 84;
     const float tx0 = A.x + 12 + gutter, tx1 = B.x - (phone ? 8 : 14), W = tx1 - tx0;
     regionWidthPx_ = W;
     regionTx0_ = tx0;
@@ -1215,9 +1215,15 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     auto laneLabel = [&](float ly, float lh, const char* t) {
         if (phone) {  // 11 dp labels in the 56 dp gutter; "Not in GRCh38" wraps
             ImGui::PushFont(fonts().uiSmall);
-            const float lw = tx0 - A.x - 6;  // 58 dp: the 56 dp gutter plus the panel inset
-            ImVec2 ls = ImGui::CalcTextSize(t, nullptr, false, lw);
-            dl->AddText(nullptr, 0.f, ImVec2(A.x + 4, ly + (lh - ls.y) * 0.5f), col(kMuted), t, nullptr, lw);
+            const float lw = tx0 - A.x - 6;  // 72 dp gutter: single line, cut with an ellipsis if it does not fit
+            std::string lt = t;
+            if (ImGui::CalcTextSize(t).x > lw) {
+                while (!lt.empty() && ImGui::CalcTextSize((lt + "\xE2\x80\xA6").c_str()).x > lw) lt.pop_back();
+                while (!lt.empty() && lt.back() == ' ') lt.pop_back();
+                lt += "\xE2\x80\xA6";
+            }
+            ImVec2 ls = ImGui::CalcTextSize(lt.c_str());
+            dl->AddText(ImVec2(A.x + 4, ly + (lh - ls.y) * 0.5f), col(kMuted), lt.c_str());
             ImGui::PopFont();
             return;
         }
@@ -1402,7 +1408,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
 
     // cCREs, repeats, not-in-GRCh38
     const float ccreY = y + hdrH, repY = ccreY + ccreH + 6 + hdrH, niY = repY + repH + 6;
-    laneLabel(ccreY, ccreH, phone ? "cCREs" : "Regulatory");  // "Regulatory" is 61 dp at 12 sp: wider than the gutter
+    laneLabel(ccreY, ccreH, "Regulatory");
     // CpG methylation heat strip (4 px) at the bottom of the regulatory track: per-pixel mean, #2A2F3A -> #C9A6FF
     if (store_.hasMethyl()) {
         const float my0 = ccreY + ccreH - 4, my1 = ccreY + ccreH;
