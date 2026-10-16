@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "data/geneindex.h"
 #include "data/genome.h"
 #include "data/overview.h"
 #include "data/tracks.h"
@@ -21,6 +22,8 @@ struct AppOptions {
     bool reducedMotion = false;
     bool expandSv = false;  // --expand sv
     bool expandCard = false;  // --expand-card
+    std::string search;  // --search QUERY: open the search box with this text
+    std::string gotoQuery;  // --goto QUERY: jump as if Enter was pressed
 };
 
 struct Probe {
@@ -53,6 +56,9 @@ private:
     };
     void gather(int ci, int64_t s, int64_t e, Visible& v);
     void drawTopBar(ImDrawList* dl, float w);
+    void drawSearch(float w);
+    bool runQuery(const std::string& q);  // jump to the best match; false if nothing matched
+    void jumpTo(int ci, double s, double e);
     float drawCoverage(ImDrawList* dl, float y, float w);
     void drawOverview(ImDrawList* dl, ImVec2 a, ImVec2 b, FogRenderer& fog);
     void drawRegion(ImDrawList* dl, ImVec2 a, ImVec2 b, FogRenderer& fog);
@@ -72,7 +78,17 @@ private:
     // overview drag-select
     int dragCi_ = -1;
     float dragX0_ = 0;
-    char gotoBuf_[96] = {};
+    // gene search
+    GeneIndex genes_;
+    char searchBuf_[96] = {};
+    bool searchOpen_ = false, searchFocus_ = false;
+    int searchSel_ = 0;
+    double clock_ = 0;  // app time (s), advanced by io.DeltaTime
+    bool animating_ = false;
+    double animT0_ = 0, animS0_ = 0, animE0_ = 0, animS1_ = 0, animE1_ = 0;
+    std::string hlName_, hlChrom_;
+    int64_t hlS_ = -1;
+    double hlT0_ = -10;
     bool svExpanded_ = false;
     bool cardSvExpanded_ = false;  // allele list in the lookup card (session only)  // per session only, never saved
     int svRowsLast_ = 1;

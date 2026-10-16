@@ -106,6 +106,17 @@ bool App::init(const AppOptions& opt, std::string& err) {
     if (!store_.open(tracks, vcf, err)) return false;
     std::fprintf(stderr, "variants: %s\n", store_.hasVariants() ? vcf.c_str() : "(none)");
     if (!genome_.open(opt.dataDir + "/hs1.fa.bgz", err)) return false;
+    {
+        std::string ge;
+        std::string gp = tracks + "/genes.idx.tsv.gz";
+        std::error_code ec2;
+        auto sz = std::filesystem::file_size(gp, ec2);
+        if (genes_.load(gp, ge))
+            std::fprintf(stderr, "gene index: %zu records, %zu aliases, %zu extra copies (%.0f KB)\n", genes_.size(),
+                         genes_.aliasCount(), genes_.extraCount(), ec2 ? 0.0 : double(sz) / 1024.0);
+        else
+            std::fprintf(stderr, "gene index: %s (run scripts/prepare_tracks.sh)\n", ge.c_str());
+    }
     // natural order chr1..chr22, chrX, chrY (chrM is too small to show)
     auto rank = [](const std::string& n) {
         std::string s = n.rfind("chr", 0) == 0 ? n.substr(3) : n;
@@ -148,6 +159,11 @@ bool App::init(const AppOptions& opt, std::string& err) {
         if (!parseLocus(opt.pin, ci, s, e)) { err = "bad --pin " + opt.pin; return false; }
         pinned_ = {true, ci, int64_t(s), false};
     }
+    if (!opt.search.empty()) {
+        std::snprintf(searchBuf_, sizeof searchBuf_, "%s", opt.search.c_str());
+        searchOpen_ = searchFocus_ = true;
+    }
+    if (!opt.gotoQuery.empty() && !runQuery(opt.gotoQuery)) { err = "no match for --goto " + opt.gotoQuery; return false; }
     return true;
 }
 
@@ -187,7 +203,7 @@ float App::stretchAlpha(float share, float p5, float p95) const {
     return 0.1f + (0.85f - 0.1f) * t;
 }
 
-bool App::idle() const { return store_.pending() == 0; }
+bool App::idle() const { return store_.pending() == 0 && !animating_ && clock_ - hlT0_ > 0.75; }  // shots catch the outline mid-fade
 
 void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
     const std::string& chrom = ov_.chroms()[ci].name;
@@ -233,7 +249,18 @@ void App::frame(FogRenderer& fog) {
     ImGui::PopStyleVar();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     hover_ = {};
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) pinned_ = {};
+    clock_ += io.DeltaTime;
+    if (animating_) {  // 300 ms ease-out pan+zoom
+        double t = std::clamp((clock_ - animT0_) / 0.3, 0.0, 1.0);
+        double k = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+        double s0 = animS0_ + (animS1_ - animS0_) * k, e0 = animE0_ + (animE1_ - animE0_) * k;
+        if (t >= 1.0) { s0 = animS1_; e0 = animE1_; animating_ = false; }
+        setView(viewCi_, s0, e0);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        if (searchOpen_) searchOpen_ = false, ImGui::SetWindowFocus(nullptr);
+        else pinned_ = {};
+    }
 
     drawTopBar(dl, D.x);
     float y = drawCoverage(dl, kTopBarH, D.x);
@@ -244,7 +271,135 @@ void App::frame(FogRenderer& fog) {
     drawOverview(dl, ovA, ovB, fog);
     drawRegion(dl, rgA, rgB, fog);
     drawCard(dl, cdA, cdB);
+    drawSearch(D.x);
     ImGui::End();
+}
+
+void App::jumpTo(int ci, double s, double e) {
+    if (ci != viewCi_) { setView(ci, s, e); animating_ = false; return; }  // other chromosome: cut, no pan
+    animS0_ = viewS_; animE0_ = viewE_;
+    // final view after clamping, so the animation lands exactly
+    double cs = viewS_, ce = viewE_;
+    setView(ci, s, e);
+    animS1_ = viewS_; animE1_ = viewE_;
+    setView(ci, cs, ce);
+    animT0_ = clock_;
+    animating_ = true;
+}
+
+bool App::runQuery(const std::string& q) {
+    int ci;
+    double s, e;
+    if (q.find(':') != std::string::npos && parseLocus(q, ci, s, e)) {
+        if (e - s <= 1) { s -= 50; e += 50; }  // single position: 100 bp around it
+        jumpTo(ci, s, e);
+        return true;
+    }
+    auto hits = genes_.search(q, 8);
+    if (hits.empty()) return false;
+    const GeneEntry* g = hits[std::min<size_t>(size_t(std::max(0, searchSel_)), hits.size() - 1)].g;
+    if (!searchOpen_) g = hits[0].g;
+    ci = ov_.find(g->chrom);
+    if (ci < 0) return false;
+    double pad = double(g->e - g->s) * 0.10;
+    jumpTo(ci, double(g->s) - pad, double(g->e) + pad);
+    hlName_ = g->name; hlChrom_ = g->chrom; hlS_ = g->s; hlT0_ = clock_;
+    return true;
+}
+
+void App::drawSearch(float w) {
+    const float bw = 320, bh = 32;
+    ImVec2 a((w - bw) * 0.5f, (kTopBarH - bh) * 0.5f);
+    ImGuiIO& io = ImGui::GetIO();
+    bool typing = io.WantTextInput;
+    if ((io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_K)) || (!typing && ImGui::IsKeyPressed(ImGuiKey_Slash))) searchFocus_ = true;
+    ImGui::SetCursorScreenPos(a);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, (bh - ImGui::GetFontSize()) * 0.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, vec(kPanel));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, vec(kPanel));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, vec(kPanel));
+    ImGui::SetNextItemWidth(bw);
+    if (searchFocus_) { ImGui::SetKeyboardFocusHere(); searchFocus_ = false; }
+    bool enter = ImGui::InputTextWithHint("##search", "Gene or chr22:20,340,000", searchBuf_, sizeof searchBuf_,
+                                          ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    bool active = ImGui::IsItemActive();
+    if (ImGui::IsItemEdited()) { searchOpen_ = true; searchSel_ = 0; }
+    if (ImGui::IsItemActivated()) searchOpen_ = true;
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar(3);
+    ImDrawList* fg = ImGui::GetForegroundDrawList();
+    fg->AddRect(a, ImVec2(a.x + bw, a.y + bh), col(active || searchOpen_ ? kAccent : kBorder), 6, 0, 1.f);
+
+    std::string q = searchBuf_;
+    bool hasText = q.find_first_not_of(' ') != std::string::npos;
+    if (!searchOpen_ || !hasText) return;
+    // rows: a coordinate row, gene hits, or the no-match row
+    struct Row { std::string label, sub, tag; const GeneEntry* g = nullptr; bool locus = false; };
+    std::vector<Row> rows;
+    int ci; double s, e;
+    if (q.find(':') != std::string::npos && parseLocus(q, ci, s, e)) {
+        std::string t = ov_.chroms()[ci].name + ":" + commas(int64_t(s) + 1);
+        if (e - s > 1) t += "-" + commas(int64_t(e));
+        rows.push_back({"Go to", t, "", nullptr, true});
+    } else {
+        for (auto& h : genes_.search(q, 8)) {
+            Row r{h.g->name, h.g->chrom + ":" + commas(h.g->s + 1), "", h.g};
+            if (h.tier == 2) r.tag = "alias of " + h.g->name, r.label = h.alias;
+            if (h.g->extra) r.tag = r.tag.empty() ? "extra copy" : r.tag + ", extra copy";
+            rows.push_back(r);
+        }
+    }
+    const float rh = 28;
+    if (!rows.empty()) {
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) searchSel_ = std::min(int(rows.size()) - 1, searchSel_ + 1);
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) searchSel_ = std::max(0, searchSel_ - 1);
+        searchSel_ = std::clamp(searchSel_, 0, int(rows.size()) - 1);
+    }
+    float nr = float(std::max<size_t>(1, rows.size()));
+    ImVec2 d0(a.x, a.y + bh + 4), d1(a.x + bw, a.y + bh + 4 + nr * rh + 8);
+    fg->AddRectFilled(d0, d1, col(kPanel), 6);
+    fg->AddRect(d0, d1, col(kBorder), 6);
+    int clicked = -1;
+    if (rows.empty()) {
+        std::string t = "No gene called " + q + " in hs1";
+        fg->AddText(fonts().ui, 15, ImVec2(d0.x + 12, d0.y + 4 + (rh - 15) * 0.5f), col(0x8A8F99), t.c_str());
+    }
+    for (int i = 0; i < int(rows.size()); ++i) {
+        ImVec2 r0(d0.x + 4, d0.y + 4 + i * rh), r1(d1.x - 4, r0.y + rh);
+        bool hov = ImGui::IsMouseHoveringRect(r0, r1, false);
+        if (hov && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) searchSel_ = i;
+        if (hov && ImGui::IsMouseClicked(0)) clicked = i;
+        if (i == searchSel_) fg->AddRectFilled(r0, r1, col(kHover), 4);
+        float ty = r0.y + (rh - 15) * 0.5f;
+        fg->AddText(fonts().ui, 15, ImVec2(r0.x + 8, ty - 1), col(kText), rows[i].label.c_str());
+        float lw = fonts().ui->CalcTextSizeA(15, FLT_MAX, 0, rows[i].label.c_str()).x;
+        fg->AddText(fonts().mono, 13, ImVec2(r0.x + 8 + lw + 10, ty + 1), col(0x8A8F99), rows[i].sub.c_str());
+        if (!rows[i].tag.empty()) {
+            float tw = fonts().monoSmall->CalcTextSizeA(11, FLT_MAX, 0, rows[i].tag.c_str()).x;
+            ImVec2 p0(r1.x - tw - 14, r0.y + 6), p1(r1.x - 4, r1.y - 6);
+            fg->AddRectFilled(p0, p1, col(kBorder), 8);
+            fg->AddText(fonts().monoSmall, 11, ImVec2(p0.x + 5, p0.y + 1), col(kMuted), rows[i].tag.c_str());
+        }
+    }
+    if (clicked >= 0) { searchSel_ = clicked; enter = true; }
+    if (enter && !rows.empty()) {
+        const Row& r = rows[size_t(searchSel_)];
+        if (r.locus) runQuery(q);
+        else {
+            int gci = ov_.find(r.g->chrom);
+            if (gci >= 0) {
+                double pad = double(r.g->e - r.g->s) * 0.10;
+                jumpTo(gci, double(r.g->s) - pad, double(r.g->e) + pad);
+                hlName_ = r.g->name; hlChrom_ = r.g->chrom; hlS_ = r.g->s; hlT0_ = clock_;
+            }
+        }
+        searchOpen_ = false;
+        ImGui::SetWindowFocus(nullptr);
+    } else if (!active && ImGui::IsMouseClicked(0) && !ImGui::IsMouseHoveringRect(d0, d1, false)) {
+        searchOpen_ = false;
+    }
 }
 
 void App::drawTopBar(ImDrawList* dl, float w) {
@@ -504,14 +659,6 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     float lw = ImGui::CalcTextSize(locus.c_str()).x;
     ImGui::PopFont();
     dl->AddText(ImVec2(A.x + 74 + lw + 12, A.y + 10), col(kMuted), (spanStr(span) + "   wheel zoom | drag pan | click pin").c_str());
-    ImGui::SetCursorScreenPos(ImVec2(B.x - 12 - 230, A.y + 6));
-    ImGui::SetNextItemWidth(230);
-    if (ImGui::InputTextWithHint("##goto", "go to chr22:30,000,000-30,050,000", gotoBuf_, sizeof gotoBuf_,
-                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
-        int ci;
-        double s, e;
-        if (parseLocus(gotoBuf_, ci, s, e)) setView(ci, s, e);
-    }
 
     // track heights (genes 48, cCRE 24, repeats 24); each track has a 14px header line for hints
     const float varH = 20;
@@ -662,6 +809,11 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 for (float cx = std::max(gx0, tx0) + 20; cx < std::min(gx1, tx1) - 10; cx += 40)
                     dl->AddLine(ImVec2(cx - 3 * dir, bandY - 3), ImVec2(cx + 1 * dir, bandY), col(kMuted)),
                         dl->AddLine(ImVec2(cx + 1 * dir, bandY), ImVec2(cx - 3 * dir, bandY + 3), col(kMuted));
+            }
+            double ht = clock_ - hlT0_;
+            if (ht >= 0 && ht < 1.5 && g->name == hlName_ && g->s == hlS_ && ch.name == hlChrom_) {
+                float a = float(1.0 - ht / 1.5);
+                dl->AddRect(ImVec2(std::max(gx0, tx0) - 3, ry - 1), ImVec2(std::min(gx1, tx1) + 3, ry + rowH - 2), col(kAccent, a), 3, 0, 1.5f);
             }
             float lx = std::clamp(gx0, tx0, std::max(tx0, tx1 - 60));
             dl->AddText(ImVec2(lx, ry + 1), col(kText, 0.9f), g->name.c_str());
