@@ -827,8 +827,8 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             else { x0 = X(double(s0)); x1 = std::max(X(double(e0)), x0 + 2.f); }
         };
         // bar: complex (grey, 1 px violet top edge when it contains an inversion) or deletion (amber)
-        auto drawBar = [&](SvType t, bool inv, float af, float x0, float x1, float y0, float y1, bool outline) {
-            float a = af >= 0.01f ? 1.f : 0.35f;
+        auto drawBar = [&](SvType t, bool inv, float af, float x0, float x1, float y0, float y1, bool outline, float mul = 1.f) {
+            float a = (af >= 0.01f ? 1.f : 0.35f) * mul;
             x0 = std::max(tx0, x0); x1 = std::min(tx1, x1);
             if (x1 <= x0) return;
             if (outline) dl->AddRect(ImVec2(x0 - 1, y0 - 1), ImVec2(x1 + 1, y1 + 1), col(kBg), 0, 0, 1.f);
@@ -852,6 +852,12 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 if (rank(a2->type) != rank(b2->type)) return rank(a2->type) < rank(b2->type);
                 return (a2->e - a2->s) > (b2->e - b2->s);
             });
+            std::vector<std::pair<int64_t, int64_t>> cx;  // complex spans (for deletion transparency)
+            std::vector<std::pair<float, float>> invEdges;  // violet edges, drawn last
+            for (auto* g : gs) if (g->type == SvType::Complex) {
+                cx.push_back({g->s, g->e});
+                if (g->inv) { float a0, a1; extentOf(g->s, g->e, g->type, a0, a1); invEdges.push_back({a0, a1}); }
+            }
             std::map<float, float> drawn;  // union of drawn px extents for the outline test (O(log n) per bar)
             for (auto* g : gs) {
                 float x0, x1;
@@ -860,11 +866,20 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 bool covered = (it != drawn.end() && it->first < x1);
                 if (it != drawn.begin() && std::prev(it)->second > x0) covered = true;
                 if (g->type == SvType::Ins) drawIns(g->s, groupAf(g), svY + 6, svY + svH - 2, true);
-                else drawBar(g->type, g->inv, groupAf(g), x0, x1, svY + 5, svY + svH - 3, covered);
+                else {
+                    float mul = 1.f;
+                    if (g->type == SvType::Del)
+                        for (auto& c : cx) if (c.first < g->e && g->s < c.second) { mul = 0.85f; break; }
+                    drawBar(g->type, false, groupAf(g), x0, x1, svY + 5, svY + svH - 3, covered, mul);
+                }
                 float m0 = x0, m1 = x1;
                 if (it != drawn.begin() && std::prev(it)->second >= x0) { --it; m0 = std::min(m0, it->first); }
                 while (it != drawn.end() && it->first <= x1) { m1 = std::max(m1, it->second); it = drawn.erase(it); }
                 drawn[m0] = m1;
+            }
+            for (auto& e : invEdges) {  // final pass: "contains an inversion" edge on top of everything
+                float a0 = std::max(tx0, e.first), a1 = std::min(tx1, e.second);
+                if (a1 > a0) dl->AddRectFilled(ImVec2(a0, svY + 5), ImVec2(a1, svY + 6), col(0xB07CFF));
             }
             svRowsLast_ = 1;
         } else {
