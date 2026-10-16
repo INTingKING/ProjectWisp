@@ -354,7 +354,8 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     const float stripH = 6.f, gap = 3.f, gutter = 40.f;
     const float colH = n * stripH + (n - 1) * gap;
     const float top = A.y + std::max(4.f, ((B.y - A.y) - colH) * 0.5f);
-    const float sx0 = A.x + 12 + gutter, sxMax = B.x - 14;
+    const float miniW = 40.f, miniGap = 8.f;
+    const float sx0 = A.x + 12 + gutter, sxMax = B.x - 14 - miniW - miniGap;
     double maxLen = 0;
     for (int ci : order_) maxLen = std::max(maxLen, double(ov_.chroms()[ci].length));
     std::vector<FogRect> fogRects;
@@ -401,6 +402,29 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             bool ni = !last && ov_.frac(ci, b, kNotIn) > 0.5f;
             if (ni && hatchB < 0) hatchB = int(b);
             if (!ni && hatchB >= 0) { hatches.push_back({bx(uint32_t(hatchB)), y, bx(b), yb}); hatchB = -1; }
+        }
+        // per-chromosome mini bar at the strip's right end: known | introns+repeats | nothing known
+        {
+            float mx = sx0 + sw + miniGap, x = mx;
+            double sh[3] = {ch.share(kExon) + ch.share(kCcre), ch.share(kIntron) + ch.share(kRepeat), ch.share(kNothing)};
+            unsigned cc[3] = {kColKnown, kColIntron, kColFog};
+            double tot = sh[0] + sh[1] + sh[2];
+            for (int k = 0; k < 3; ++k) {
+                float w = tot > 0 ? float(miniW * sh[k] / tot) : 0.f;
+                dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, yb), col(cc[k]));
+                x += w;
+            }
+            if (ImGui::IsMouseHoveringRect(ImVec2(mx, y - 1), ImVec2(mx + miniW, yb + 1))) {
+                ImGui::BeginTooltip();
+                ImGui::PushFont(fonts().uiBold);
+                ImGui::Text("%s  %.1f Mb", ch.name.c_str(), double(ch.length) / 1e6);
+                ImGui::PopFont();
+                ImGui::TextColored(vec(kColKnown), "Known function  %.1f%%", 100 * sh[0]);
+                ImGui::TextColored(vec(kMuted), "Introns + repeats  %.1f%%", 100 * sh[1]);
+                ImGui::Text("Nothing known  %.1f%%", 100 * sh[2]);
+                ImGui::TextColored(vec(0xC9B6F2), "New in T2T (not in GRCh38)  %.1f%%", 100 * ch.share(kNotIn));
+                ImGui::EndTooltip();
+            }
         }
         // interaction: click = whole chromosome, drag = zoom to the selected range
         ImGui::SetCursorScreenPos(ImVec2(sx0, y - gap * 0.5f));
@@ -1014,8 +1038,12 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
                 cdl->AddText(ImVec2(barX - 10 - as.x, cp.y), U(kText, a), af);
                 float lh = ImGui::GetTextLineHeight();
                 cdl->AddRectFilled(ImVec2(barX, cp.y + lh * 0.5f - 3), ImVec2(barX + 60, cp.y + lh * 0.5f + 3), U(kHover), 3);
-                float fw = x->af > 0 ? std::max(2.f, 60.f * std::min(1.f, x->af)) : 0.f;
+                // log scale: 0.01% .. 100% over 60 px (clamped below 0.01%), ticks at 0.1%, 1%, 10%
+                float fw = 0.f;
+                if (x->af > 0) fw = std::max(2.f, 60.f * std::clamp((std::log10(x->af) + 4.f) / 4.f, 0.f, 1.f));
                 cdl->AddRectFilled(ImVec2(barX, cp.y + lh * 0.5f - 3), ImVec2(barX + fw, cp.y + lh * 0.5f + 3), U(kAccent, common ? 1.f : 0.4f), 3);
+                for (int t = 1; t <= 3; ++t)
+                    cdl->AddLine(ImVec2(barX + 15.f * t, cp.y + lh * 0.5f - 5), ImVec2(barX + 15.f * t, cp.y + lh * 0.5f + 5), U(kMuted, 0.7f), 1.f);
                 ImGui::Dummy(ImVec2(W, lh + 2));
             }
             ImGui::PopFont();
