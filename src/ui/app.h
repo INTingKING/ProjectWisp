@@ -66,6 +66,9 @@ private:
     int dragCi_ = -1;
     float dragX0_ = 0;
     char gotoBuf_[96] = {};
+    // 5th/95th percentile of per-bin share (known = exon+cCRE, nothing), for overview contrast stretch
+    float knownP5_ = 0, knownP95_ = 1, nothingP5_ = 0, nothingP95_ = 1;
+    float stretchAlpha(float share, float p5, float p95) const;
 };
 
 }  // namespace wisp

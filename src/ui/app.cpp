@@ -106,6 +106,22 @@ bool App::init(const AppOptions& opt, std::string& err) {
     for (int i = 0; i < int(ov_.chroms().size()); ++i)
         if (rank(ov_.chroms()[i].name) < 99) order_.push_back(i);
     std::sort(order_.begin(), order_.end(), [&](int a, int b) { return rank(ov_.chroms()[a].name) < rank(ov_.chroms()[b].name); });
+    {
+        std::vector<float> kn, no;
+        for (int ci = 0; ci < int(ov_.chroms().size()); ++ci)
+            for (uint32_t b = 0; b < ov_.chroms()[ci].nbins; ++b) {
+                kn.push_back(ov_.frac(ci, b, kExon) + ov_.frac(ci, b, kCcre));
+                no.push_back(ov_.frac(ci, b, kNothing));
+            }
+        auto q = [](std::vector<float> v, double p) {
+            std::sort(v.begin(), v.end());
+            return v.empty() ? 0.f : v[size_t(p * double(v.size() - 1) + 0.5)];
+        };
+        knownP5_ = q(kn, 0.05); knownP95_ = q(kn, 0.95);
+        nothingP5_ = q(no, 0.05); nothingP95_ = q(no, 0.95);
+        std::fprintf(stderr, "overview stretch: known p5=%.4f p95=%.4f, nothing p5=%.4f p95=%.4f (%zu bins)\n",
+                     knownP5_, knownP95_, nothingP5_, nothingP95_, kn.size());
+    }
     setView(order_.empty() ? 0 : order_[0], 0, 1e18);
     if (!opt.region.empty()) {
         int ci;
@@ -149,6 +165,12 @@ void App::setView(int ci, double s, double e) {
     viewCi_ = ci;
     viewS_ = s;
     viewE_ = s + span;
+}
+
+float App::stretchAlpha(float share, float p5, float p95) const {
+    if (share <= 0.f) return 0.f;
+    float t = p95 > p5 ? std::clamp((share - p5) / (p95 - p5), 0.f, 1.f) : 1.f;
+    return 0.1f + (0.85f - 0.1f) * t;
 }
 
 bool App::idle() const { return store_.pending() == 0; }
@@ -284,7 +306,7 @@ float App::drawCoverage(ImDrawList* dl, float y0, float w) {
     legend(0, "Not in GRCh38", ov_.share(kNotIn), true);
     ImGui::PopFont();
     ImGui::PushFont(fonts().monoSmall);
-    dl->AddText(ImVec2(lx + 8, ly + 2), col(kMuted, 0.85f), "overview: brightness shows share per 100 kb");
+    dl->AddText(ImVec2(lx + 8, ly + 2), col(kMuted, 0.85f), "overview: brightness is relative to the genome-wide spread");
     ImGui::PopFont();
 
     if (hovered >= 0) {
@@ -352,10 +374,10 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 float fi = ov_.frac(ci, b, kIntron), fr = ov_.frac(ci, b, kRepeat);
                 float known = ov_.frac(ci, b, kExon) + ov_.frac(ci, b, kCcre);
                 ImVec4 c = fi + fr > 0 ? mixc(vec(kColIntron), vec(kColRepeat), fr / (fi + fr)) : vec(kColIntron);
-                c = mixc(c, vec(kColKnown), std::min(1.f, known * 4.f));
+                c = mixc(c, vec(kColKnown), stretchAlpha(known, knownP5_, knownP95_));
                 float x0 = bx(b), x1 = std::max(bx(b + 1), x0 + 0.5f);
                 dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, yb), ImGui::ColorConvertFloat4ToU32(c));
-                qa = std::round(ov_.frac(ci, b, kNothing) * 0.9f * 20.f) / 20.f;  // quantised so runs merge
+                qa = std::round(stretchAlpha(ov_.frac(ci, b, kNothing), nothingP5_, nothingP95_) * 20.f) / 20.f;  // quantised so runs merge
             }
             if (fogStart >= 0 && (last || qa != fogA)) {
                 fogRects.push_back({bx(uint32_t(fogStart)), y, bx(b), yb, fogA, 0.f, 0.f});
@@ -394,7 +416,7 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         }
     }
     ImGui::PopFont();
-    fog.draw(dl, fogRects, 24.f);  // overview: fog alpha = nothing share * 0.9, first noise octave at 24 px
+    fog.draw(dl, fogRects, 24.f);  // overview: fog alpha = percentile-stretched nothing share, first noise octave at 24 px
     for (auto& h : hatches) hatch(dl, h.x0, h.y0, h.x1, h.y1);
 }
 
