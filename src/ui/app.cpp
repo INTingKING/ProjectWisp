@@ -1188,6 +1188,13 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     const float availBot = B.y - 30;
     (void)availBot; (void)stackH;
     float y = A.y + (phone ? 24 : 28) + 16;  // top-aligned, 16px under the Region header
+    auto zoomNote = [&](float ly, float lh, const char* t) {  // phone: lane empty because of zoom, centred note
+        if (!phone) return;
+        ImGui::PushFont(fonts().uiSmall);  // 12 sp on phones
+        ImVec2 ns = ImGui::CalcTextSize(t);
+        dl->AddText(ImVec2(tx0 + (W - ns.x) * 0.5f, ly + (lh - ns.y) * 0.5f), col(0x6B7280), t);
+        ImGui::PopFont();
+    };
     auto hint = [&](float hy, const char* t) {
         if (phone) return;  // hints hidden on phones
         ImGui::PushFont(fonts().uiSmall);
@@ -1322,6 +1329,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         ImGui::PopFont();
     } else {
         hint(seqHdrY, "zoom below 20 kb to see bases");
+        zoomNote(seqY, seqH, "Pinch in to see bases");
     }
 
     // genes
@@ -1474,6 +1482,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         hint(varHdrY, "no variant file found in data/ (expects a bgzipped VCF + .tbi)");
     } else if (!detailed) {
         hint(varHdrY, "zoom below 3 Mb to load variants");
+        zoomNote(varY, varH, "Pinch in to see variants");
     } else if (vis.loading[int(Track::Variants)]) {
         hint(varHdrY, "loading variants...");
     } else if (vis.variants.empty()) {
@@ -1532,6 +1541,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         hint(svHdrY, "no SV file (run scripts/fetch_sv.sh)");
     } else if (!detailed) {
         hint(svHdrY, "zoom below 3 Mb to load structural variants");
+        zoomNote(svY, svH, "Pinch in to see structural variants");
     } else if (vis.loading[int(Track::Sv)]) {
         hint(svHdrY, "loading structural variants...");
     } else {
