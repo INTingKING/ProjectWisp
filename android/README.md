@@ -1,13 +1,13 @@
 # ProjectWisp Android spike (build only)
 
-SDL3 `android-project` template wrapping the unchanged desktop app: `libmain.so` (wisp) + `libSDL3.so`, arm64-v8a, minSdk 24, Vulkan 1.0.
+SDL3 `android-project` template wrapping the unchanged desktop app: `libmain.so` (wisp) + `libSDL3.so`, arm64-v8a, minSdk 29, Vulkan 1.1.
 
 Toolchain used: Android SDK cmdline-tools, NDK 27.3.13750724, SDK CMake 3.31.6, platform android-35, build-tools 35.0.0, OpenJDK 21.
 
 1. Cross-build htslib 1.21 (static, PIC) with the NDK's zlib:
 
        ./configure --host=aarch64-linux-android --disable-libcurl --disable-bz2 --disable-lzma \
-         --disable-gcs --disable-s3 --disable-plugins CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+         --disable-gcs --disable-s3 --disable-plugins CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
        make lib-static CFLAGS="-g -O2 -fPIC"
        # copy libhts.a -> $PREFIX/lib, htslib/ -> $PREFIX/include
 

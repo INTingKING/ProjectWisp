@@ -4,8 +4,8 @@
     android:versionName="1.0"
     android:installLocation="auto">
 
-    <!-- Vulkan 1.0 (0x400000 = VK_MAKE_API_VERSION(0,1,0,0)); spike baseline, see android/README.md -->
-    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400000" android:required="true" />
+    <!-- Vulkan 1.1 (0x401000); required on 64-bit devices launching with Android 10+, minSdk 29 -->
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
 
     <!-- Touchscreen support -->
     <uses-feature
