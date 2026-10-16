@@ -110,8 +110,10 @@ bool App::init(const AppOptions& opt, std::string& err) {
         std::vector<float> kn, no;
         for (int ci = 0; ci < int(ov_.chroms().size()); ++ci)
             for (uint32_t b = 0; b < ov_.chroms()[ci].nbins; ++b) {
-                kn.push_back(ov_.frac(ci, b, kExon) + ov_.frac(ci, b, kCcre));
-                no.push_back(ov_.frac(ci, b, kNothing));
+                // percentiles over non-zero bins only (zero bins get alpha 0 anyway)
+                float k = ov_.frac(ci, b, kExon) + ov_.frac(ci, b, kCcre), z = ov_.frac(ci, b, kNothing);
+                if (k > 0.f) kn.push_back(k);
+                if (z > 0.f) no.push_back(z);
             }
         auto q = [](std::vector<float> v, double p) {
             std::sort(v.begin(), v.end());
@@ -119,8 +121,8 @@ bool App::init(const AppOptions& opt, std::string& err) {
         };
         knownP5_ = q(kn, 0.05); knownP95_ = q(kn, 0.95);
         nothingP5_ = q(no, 0.05); nothingP95_ = q(no, 0.95);
-        std::fprintf(stderr, "overview stretch: known p5=%.4f p95=%.4f, nothing p5=%.4f p95=%.4f (%zu bins)\n",
-                     knownP5_, knownP95_, nothingP5_, nothingP95_, kn.size());
+        std::fprintf(stderr, "overview stretch: known p5=%.4f p95=%.4f, nothing p5=%.4f p95=%.4f (non-zero bins: %zu known, %zu nothing)\n",
+                     knownP5_, knownP95_, nothingP5_, nothingP95_, kn.size(), no.size());
     }
     setView(order_.empty() ? 0 : order_[0], 0, 1e18);
     if (!opt.region.empty()) {
