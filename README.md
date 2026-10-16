@@ -59,12 +59,21 @@ Structural variants: `scripts/fetch_sv.sh` (also called from `fetch_data.sh`) do
 
 CpG methylation: `fetch_data.sh` downloads the CHM13 nanopore CpG bigWig (177 MB) to `data/tracks/`; libBigWig (FetchContent, no curl) reads it per 1 Mb tile through the same loader/cache. It is drawn as a 4 px strip at the bottom of the regulatory track (#2A2F3A low -> #C9A6FF high, per-pixel mean).
 
-Interaction: click a chromosome in the overview (or drag across it) to open it; mouse wheel zooms, drag pans, click pins the lookup card; the box at the top right of the region view accepts a locus. Above 3 Mb the region view draws densities from the summary; below 3 Mb features load from tabix in 1 Mb tiles (LRU cache, ~100 MB cap); below 20 kb the sequence lane appears, with A/C/G/T letters once a base is at least 8 px wide.
+Interaction: click a chromosome in the overview (or drag across it) to open it; mouse wheel zooms, drag pans, click pins the lookup card; the search box in the top bar (Ctrl+K or /) finds genes by symbol or alias (extra Liftoff copies listed under their main copy) and accepts a locus such as chr22:20,340,000. Above 3 Mb the region view draws densities from the summary; below 3 Mb features load from tabix in 1 Mb tiles (LRU cache, ~100 MB cap); below 20 kb the sequence lane appears, with A/C/G/T letters once a base is at least 8 px wide.
 
 ## Data
 Genome and annotation files are **not** in this repo (10 to 20 GB). A fetch script will download them:
 - Sequence: UCSC `hs1.fa.gz`, stored bgzipped with `samtools faidx`.
 - liftOver chains `hg38ToHs1` / `hs1ToHg38` from UCSC.
+
+### Data credits
+`scripts/fetch_data.sh` downloads everything below (it calls `scripts/fetch_sv.sh` for the SV step). Each file keeps its own licence.
+- **T2T-CHM13 v2.0 sequence** (`hs1.fa.gz`) and liftOver chains, via UCSC: https://hgdownload.soe.ucsc.edu/goldenPath/hs1/ . Nurk S. et al., *The complete sequence of a human genome*, Science 376:44-53 (2022). The UCSC liftOver chain files are free for non-commercial use only; commercial use needs a licence from UCSC.
+- **CHM13 annotations** (RefSeq Liftoff v5.3 genes, RepeatMasker 4.1.2p1, `chm13v2-unique_to_hg38.bed`) from the T2T consortium bucket: https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/ (open data, CC0 / public per the T2T consortium).
+- **ENCODE cCREs** (`encodeCcreCombined.bb`, hg38, lifted to hs1): https://hgdownload.soe.ucsc.edu/gbdb/hg38/encode3/ccre/ . ENCODE Project Consortium, Nature 583:699-710 (2020). ENCODE data are free to use.
+- **1000 Genomes on CHM13** (chr22 allele-frequency VCF): https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/variants/1000_Genomes_Project/chm13v2.0/ . Aganezov S. et al., Science 376:eabl3533 (2022).
+- **HPRC structural variants** (Minigraph-Cactus v1.1, CHM13-based, `hprc-v1.1-mc-chm13.vcfbub.a100k.wave.vcf.gz`, filtered locally by `fetch_sv.sh` to sites with |LEN| >= 50 plus INV-flagged records): https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/freeze1/minigraph-cactus/hprc-v1.1-mc-chm13/ . Liao W.-W. et al., *A draft human pangenome reference*, Nature 617:312-324 (2023); Hickey G. et al., Nature Biotechnology 42:663-673 (2024). HPRC data are released openly (HPRC data use: open access, cite the papers).
+- **CHM13 CpG methylation** (nanopore, guppy 3.6.0 + nanopolish 0.13.2, bigWig): https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/annotation/regulation/chm13v2.0_CHM13_CpG_ont_guppy3.6.0_nanopolish0.13.2.bw . Gershman A. et al., *Epigenetic patterns in a complete human genome*, Science 376:eabj5089 (2022). T2T consortium open data.
 
 ## Licence and usage
 Everything made for this project (code, logo, graphics, docs) is MIT licensed (see `LICENSE`).
