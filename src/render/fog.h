@@ -20,13 +20,13 @@ public:
     bool init(VkDevice device, VmaAllocator vma, VkRenderPass rp, int frames);
     void shutdown();
     void beginFrame(float time, ImVec2 drift, ImVec2 viewport);
-    void draw(ImDrawList* dl, const std::vector<FogRect>& rects);
+    void draw(ImDrawList* dl, const std::vector<FogRect>& rects, float octave1 = 64.f);
     void upload(int slot);
 
 private:
     struct Vtx { float px, py, rx0, ry0, rx1, ry1, alpha, ex, ey; };
-    struct Batch { FogRenderer* self; uint32_t first, count; };
-    struct Push { float vw, vh, time, pad0, dx, dy, pad1, pad2, tint[4]; };
+    struct Batch { FogRenderer* self; uint32_t first, count; float octave1; };
+    struct Push { float vw, vh, time, octave1, dx, dy, pad1, pad2, tint[4]; };
     struct Buf { VkBuffer buf = VK_NULL_HANDLE; VmaAllocation alloc = nullptr; void* map = nullptr; size_t cap = 0; };
     static void callback(const ImDrawList* dl, const ImDrawCmd* cmd);
 

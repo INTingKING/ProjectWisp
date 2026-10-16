@@ -21,7 +21,8 @@ bool apply(const char* assetDir) {
     f.uiBold = io.Fonts->AddFontFromFileTTF((d + "Inter-SemiBold.ttf").c_str(), 15.f, &cfg);
     f.title = io.Fonts->AddFontFromFileTTF((d + "Inter-SemiBold.ttf").c_str(), 20.f, &cfg);
     f.mono = io.Fonts->AddFontFromFileTTF((d + "JetBrainsMono-Regular.ttf").c_str(), 13.f, &cfg);
-    bool ok = f.ui && f.uiBold && f.title && f.mono;
+    f.monoSmall = io.Fonts->AddFontFromFileTTF((d + "JetBrainsMono-Regular.ttf").c_str(), 11.f, &cfg);
+    bool ok = f.monoSmall && f.ui && f.uiBold && f.title && f.mono;
     if (!ok) {
         std::fprintf(stderr, "warning: fonts not found under %s, using ImGui default\n", d.c_str());
         ImFont* def = io.Fonts->AddFontDefault();
@@ -29,6 +30,7 @@ bool apply(const char* assetDir) {
         if (!f.uiBold) f.uiBold = def;
         if (!f.title) f.title = def;
         if (!f.mono) f.mono = def;
+        if (!f.monoSmall) f.monoSmall = def;
     }
     io.FontDefault = f.ui;
 

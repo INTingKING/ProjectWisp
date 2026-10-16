@@ -21,6 +21,7 @@ struct Fonts {
     ImFont* uiBold = nullptr;  // Inter SemiBold 15
     ImFont* title = nullptr;   // Inter SemiBold 20
     ImFont* mono = nullptr;    // JetBrains Mono 13
+    ImFont* monoSmall = nullptr;  // JetBrains Mono 11
 };
 Fonts& fonts();
 bool apply(const char* assetDir);

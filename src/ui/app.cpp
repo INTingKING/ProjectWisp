@@ -309,71 +309,59 @@ float App::drawCoverage(ImDrawList* dl, float y0, float w) {
 void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     dl->AddRectFilled(A, B, col(kPanel), 8);
     dl->AddRect(A, B, col(kBorder), 8);
-    ImGui::PushFont(fonts().uiBold);
-    dl->AddText(ImVec2(A.x + 12, A.y + 8), col(kText), "Genome overview");
-    ImGui::PopFont();
-    dl->AddText(ImVec2(A.x + 140, A.y + 8), col(kMuted), "click a chromosome or drag across it to zoom");
-
+    // one column of strips: 6 px tall, 3 px gap, 40 px label gutter; one solid block per 100 kb bin
     const int n = int(order_.size());
     if (!n) return;
-    // two columns (chr1-12 | chr13-Y) so each strip is tall enough to read and label
-    const int perCol = (n + 1) / 2;
-    const float top = A.y + 34, bottom = B.y - 8;
-    const float rowH = (bottom - top) / perCol, stripH = std::max(3.f, rowH - 4.f);
-    const float labelW = 30, colW = (B.x - A.x - 24) / 2;
+    const float stripH = 6.f, gap = 3.f, gutter = 40.f;
+    const float colH = n * stripH + (n - 1) * gap;
+    const float top = A.y + std::max(4.f, ((B.y - A.y) - colH) * 0.5f);
+    const float sx0 = A.x + 12 + gutter, sxMax = B.x - 14;
     double maxLen = 0;
     for (int ci : order_) maxLen = std::max(maxLen, double(ov_.chroms()[ci].length));
     std::vector<FogRect> fogRects;
     struct Hatch { float x0, y0, x1, y1; };
     std::vector<Hatch> hatches;
     ImGuiIO& io = ImGui::GetIO();
-    ImGui::PushFont(fonts().mono);
+    const double bin = ov_.binSize();
+    ImGui::PushFont(fonts().monoSmall);
     for (int r = 0; r < n; ++r) {
         int ci = order_[r];
         const auto& ch = ov_.chroms()[ci];
-        const float sx0 = A.x + 12 + (r / perCol) * colW + labelW, sxMax = A.x + 12 + (r / perCol + 1) * colW - 14;
-        float y = top + (r % perCol) * rowH, yb = y + stripH;
+        float y = top + r * (stripH + gap), yb = y + stripH;
         float sw = float((sxMax - sx0) * double(ch.length) / maxLen);
+        double bpPerPx = double(ch.length) / sw;
         std::string label = ch.name.substr(0, 3) == "chr" ? ch.name.substr(3) : ch.name;
         ImVec2 ts = ImGui::CalcTextSize(label.c_str());
-        dl->AddText(ImVec2(sx0 - 8 - ts.x, y + (stripH - ts.y) * 0.5f), col(ci == viewCi_ ? kAccent : kMuted), label.c_str());
-        // per-pixel stacked composition: exon, cCRE, intron, repeat, nothing (top to bottom)
-        int cols = std::max(1, int(std::ceil(sw)));
-        double bpPerPx = double(ch.length) / sw;
-        float runStart = -1, runAlpha = 0;
-        int runN = 0;
-        float hatchStart = -1;
-        for (int px = 0; px <= cols; ++px) {
-            float f[kCatCount] = {};
-            bool last = px == cols;
-            if (!last) {
-                ov_.average(ci, px * bpPerPx, (px + 1) * bpPerPx, f);
-                float x = sx0 + px, x2 = std::min(sx0 + sw, x + 1.f);
-                float yy = y;
-                for (int k = 0; k < kNotIn; ++k) {
-                    float h = f[k] * stripH;
-                    if (h > 0.05f) dl->AddRectFilled(ImVec2(x, yy), ImVec2(x2, yy + h), col(catColor(k)));
-                    yy += h;
-                }
+        dl->AddText(ImVec2(sx0 - 6 - ts.x, y + (stripH - ts.y) * 0.5f), col(ci == viewCi_ ? kAccent : kMuted), label.c_str());
+        auto bx = [&](uint32_t b) { return sx0 + float(std::min<double>(double(b) * bin, double(ch.length)) / bpPerPx); };
+        // largest category per bin (exon, cCRE, intron, repeat, nothing); runs of equal colour merged
+        auto largest = [&](uint32_t b) {
+            int best = kExon;
+            for (int k = 1; k < kNotIn; ++k)
+                if (ov_.frac(ci, b, Cat(k)) > ov_.frac(ci, b, Cat(best))) best = k;
+            return best;
+        };
+        uint32_t runB = 0;
+        int runCat = ch.nbins ? largest(0) : kNothing;
+        int hatchB = -1;
+        for (uint32_t b = 0; b <= ch.nbins; ++b) {
+            bool last = b == ch.nbins;
+            int c = last ? -1 : largest(b);
+            if (c != runCat) {
+                float x0 = bx(runB), x1 = std::max(bx(b), x0 + 1.f);
+                dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, yb), col(catColor(runCat)));
+                if (runCat == kNothing) fogRects.push_back({x0, y - 1, x1, yb + 1, 0.70f, 24.f, 2.f});
+                runB = b;
+                runCat = c;
             }
-            bool foggy = !last && f[kNothing] > 0.2f;
-            if (foggy) {
-                if (runStart < 0) { runStart = sx0 + px; runAlpha = 0; runN = 0; }
-                runAlpha += f[kNothing];
-                ++runN;
-            } else if (runStart >= 0) {
-                float a = 0.55f * std::min(1.f, 1.6f * runAlpha / runN);
-                fogRects.push_back({runStart, y - 1, sx0 + px, yb + 1, a, 24.f, 2.f});
-                runStart = -1;
-            }
-            bool notin = !last && f[kNotIn] > 0.5f;
-            if (notin && hatchStart < 0) hatchStart = sx0 + px;
-            if (!notin && hatchStart >= 0) { hatches.push_back({hatchStart, y, sx0 + px, yb}); hatchStart = -1; }
+            bool ni = !last && ov_.frac(ci, b, kNotIn) > 0.5f;
+            if (ni && hatchB < 0) hatchB = int(b);
+            if (!ni && hatchB >= 0) { hatches.push_back({bx(uint32_t(hatchB)), y, bx(b), yb}); hatchB = -1; }
         }
         // interaction: click = whole chromosome, drag = zoom to the selected range
-        ImGui::SetCursorScreenPos(ImVec2(sx0, y));
+        ImGui::SetCursorScreenPos(ImVec2(sx0, y - gap * 0.5f));
         ImGui::PushID(r);
-        ImGui::InvisibleButton("strip", ImVec2(std::max(sw, 4.f), rowH));
+        ImGui::InvisibleButton("strip", ImVec2(std::max(sw, 4.f), stripH + gap));
         if (ImGui::IsItemActivated()) { dragCi_ = ci; dragX0_ = io.MousePos.x; }
         if (ImGui::IsItemHovered()) {
             double pos = std::clamp<double>((io.MousePos.x - sx0) * bpPerPx, 0, double(ch.length) - 1);
@@ -394,11 +382,11 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         if (ci == viewCi_) {
             float a = sx0 + float(viewS_ / bpPerPx), b = sx0 + float(viewE_ / bpPerPx);
             if (b - a < 3) { float m = (a + b) * 0.5f; a = m - 1.5f; b = m + 1.5f; }
-            dl->AddRect(ImVec2(a - 1, y - 2), ImVec2(b + 1, yb + 2), col(kAccent), 2, 0, 1.5f);
+            dl->AddRect(ImVec2(a - 1, y - 1.5f), ImVec2(b + 1, yb + 1.5f), col(kAccent), 1, 0, 1.f);
         }
     }
     ImGui::PopFont();
-    fog.draw(dl, fogRects);  // fog above strips, below hatching and the selection
+    fog.draw(dl, fogRects, 24.f);  // overview: 70% fog, first noise octave at 24 px
     for (auto& h : hatches) hatch(dl, h.x0, h.y0, h.x1, h.y1);
 }
 

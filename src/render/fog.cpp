@@ -116,9 +116,9 @@ void FogRenderer::beginFrame(float time, ImVec2 drift, ImVec2 viewport) {
     push_.tint[3] = 1.f;
 }
 
-void FogRenderer::draw(ImDrawList* dl, const std::vector<FogRect>& rects) {
+void FogRenderer::draw(ImDrawList* dl, const std::vector<FogRect>& rects, float octave1) {
     if (rects.empty()) return;
-    Batch b{this, uint32_t(verts_.size()), 0};
+    Batch b{this, uint32_t(verts_.size()), 0, octave1};
     for (const FogRect& r : rects) {
         if (r.x1 <= r.x0 || r.y1 <= r.y0 || r.alpha <= 0.f) continue;
         float ex = std::min(r.edgeX, (r.x1 - r.x0) * 0.5f), ey = std::min(r.edgeY, (r.y1 - r.y0) * 0.5f);
@@ -172,7 +172,9 @@ void FogRenderer::callback(const ImDrawList*, const ImDrawCmd* cmd) {
     vkCmdSetScissor(cb, 0, 1, &sc);
     VkDeviceSize off = 0;
     vkCmdBindVertexBuffers(cb, 0, 1, &buf.buf, &off);
-    vkCmdPushConstants(cb, self->layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &self->push_);
+    Push pc = self->push_;
+    pc.octave1 = b->octave1;
+    vkCmdPushConstants(cb, self->layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &pc);
     vkCmdDraw(cb, b->count, 1, b->first, 0);
 }
 

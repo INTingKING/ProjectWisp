@@ -3,7 +3,7 @@
 layout(location = 0) in vec2 vPos;
 layout(location = 1) flat in vec4 vRect;
 layout(location = 2) flat in vec3 vParams;
-layout(push_constant) uniform PC { vec2 viewport; float time; float pad0; vec2 drift; vec2 pad1; vec4 tint; } pc;
+layout(push_constant) uniform PC { vec2 viewport; float time; float octave1; vec2 drift; vec2 pad1; vec4 tint; } pc;
 layout(location = 0) out vec4 outColor;
 
 float hash(vec2 p) {
@@ -19,7 +19,7 @@ float vnoise(vec2 p) {
 }
 void main() {
     vec2 p = vPos - pc.drift * pc.time;
-    float n = 0.7 * vnoise(p / 64.0) + 0.3 * vnoise(p / 160.0);
+    float n = 0.7 * vnoise(p / pc.octave1) + 0.3 * vnoise(p / 160.0);
     float dx = min(vPos.x - vRect.x, vRect.z - vPos.x);
     float dy = min(vPos.y - vRect.y, vRect.w - vPos.y);
     float m = smoothstep(0.0, max(vParams.y, 0.001), dx) * smoothstep(0.0, max(vParams.z, 0.001), dy);
