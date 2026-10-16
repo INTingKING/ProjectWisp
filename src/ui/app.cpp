@@ -163,6 +163,12 @@ bool App::init(const AppOptions& opt, std::string& err) {
         std::snprintf(searchBuf_, sizeof searchBuf_, "%s", opt.search.c_str());
         searchOpen_ = searchFocus_ = true;
         searchMore_ = opt.searchMore;
+        if (!opt.searchGroup.empty()) {  // shots: open the first extra-copy group of this symbol, scrolled 3 rows into its copies
+            for (auto& h : genes_.search(opt.search, 2000))
+                if (!h.g->extra && h.g->name == opt.searchGroup) { openGroup_ = h.g->name + "@" + h.g->chrom + std::to_string(h.g->s); break; }
+            searchMore_ = true;
+            scrollToGroup_ = 4;
+        }
     }
     if (!opt.gotoQuery.empty() && !runQuery(opt.gotoQuery)) { err = "no match for --goto " + opt.gotoQuery; return false; }
     return true;
@@ -326,7 +332,7 @@ void App::drawSearch(float w) {
     bool enter = ImGui::InputTextWithHint("##search", "Gene or chr22:20,340,000", searchBuf_, sizeof searchBuf_,
                                           ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
     bool active = ImGui::IsItemActive();
-    if (ImGui::IsItemEdited()) { searchOpen_ = true; searchSel_ = 0; searchScroll_ = 0; searchMore_ = false; expandedGroups_.clear(); }
+    if (ImGui::IsItemEdited()) { searchOpen_ = true; searchSel_ = 0; searchScroll_ = 0; searchMore_ = false; openGroup_.clear(); }
     if (ImGui::IsItemActivated()) searchOpen_ = true;
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar(3);
@@ -340,6 +346,7 @@ void App::drawSearch(float w) {
     enum Kind { kGeneRow, kLocusRow, kMoreRow, kCopiesRow };
     struct Row { std::string label, sub, tag; const GeneEntry* g = nullptr; Kind kind = kGeneRow; int n = 0; };
     std::vector<Row> rows;
+    int stickyIdx = -1, stickyEnd = -1;  // opened extra-copy group: main row index, one past its last copy
     const int cap = 8, maxVisible = 16;
     int ci; double s, e;
     if (q.find(':') != std::string::npos && parseLocus(q, ci, s, e)) {
@@ -362,17 +369,20 @@ void App::drawSearch(float w) {
             groups.push_back({i, j});
             i = j;
         }
+        auto keyOf = [](const GeneEntry* g) { return g->name + "@" + g->chrom + std::to_string(g->s); };
         size_t shown = 0;
         bool limited = !searchMore_ && hits.size() > size_t(cap);
         int budget = limited ? cap - 1 : INT32_MAX;  // last row becomes '+N more'
         for (auto [i, j] : groups) {
             if (budget <= 0) break;
+            bool open = !openGroup_.empty() && keyOf(hits[i].g) == openGroup_;
+            if (open) stickyIdx = int(rows.size());
             rows.push_back(geneRow(hits[i]));
             ++shown; --budget;
             size_t copies = j - i - 1;
+            if (open) stickyEnd = int(rows.size() + copies);
             if (!copies) continue;
-            bool open = expandedGroups_.count(hits[i].g->name + "@" + hits[i].g->chrom + std::to_string(hits[i].g->s)) > 0;
-            if (open || int(copies) <= budget || !limited) {
+            if (int(copies) <= budget || !limited) {
                 for (size_t k = i + 1; k < j; ++k) rows.push_back(geneRow(hits[k]));
                 shown += copies; budget -= int(copies);
             } else if (budget > 0) {
@@ -402,7 +412,10 @@ void App::drawSearch(float w) {
         if (searchSel_ < searchScroll_) searchScroll_ = searchSel_;
         if (searchSel_ >= searchScroll_ + visible) searchScroll_ = searchSel_ - visible + 1;
     }
+    if (stickyIdx >= 0 && scrollToGroup_) { searchScroll_ = stickyIdx + scrollToGroup_ - 1; scrollToGroup_ = 0; }
     searchScroll_ = std::clamp(searchScroll_, 0, maxScroll);
+    // sticky header: the opened group's main row stays on top while its copies scroll under it
+    bool sticky = stickyIdx >= 0 && searchScroll_ > stickyIdx && searchScroll_ < stickyEnd;
     fg->AddRectFilled(d0, d1, col(kPanel), 6);
     fg->AddRect(d0, d1, col(kBorder), 6);
     int clicked = -1;
@@ -411,9 +424,17 @@ void App::drawSearch(float w) {
         fg->AddText(fonts().ui, 15, ImVec2(d0.x + 12, d0.y + 4 + (rh - 15) * 0.5f), col(0x8A8F99), t.c_str());
     }
     fg->PushClipRect(d0, d1, true);
-    for (int i = searchScroll_; i < std::min(int(rows.size()), searchScroll_ + visible); ++i) {
+    std::vector<int> order;  // row index per visible slot
+    if (sticky) order.push_back(stickyIdx);
+    for (int i = searchScroll_ + (sticky ? 1 : 0); i < int(rows.size()) && int(order.size()) < visible; ++i) order.push_back(i);
+    for (int slot = 0; slot < int(order.size()); ++slot) {
+        int i = order[size_t(slot)];
         const Row& rw = rows[size_t(i)];
-        ImVec2 r0(d0.x + 4, d0.y + 4 + (i - searchScroll_) * rh), r1(d1.x - 4, r0.y + rh);
+        ImVec2 r0(d0.x + 4, d0.y + 4 + slot * rh), r1(d1.x - 4, r0.y + rh);
+        if (sticky && slot == 0) {  // header background + divider so copies visibly pass beneath
+            fg->AddRectFilled(ImVec2(d0.x + 1, r0.y - 3), ImVec2(d1.x - 1, r1.y), col(kPanel));
+            fg->AddLine(ImVec2(d0.x + 1, r1.y), ImVec2(d1.x - 1, r1.y), col(kBorder));
+        }
         bool hov = ImGui::IsMouseHoveringRect(r0, r1, false);
         if (hov && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) searchSel_ = i;
         if (hov && ImGui::IsMouseClicked(0)) clicked = i;
@@ -456,7 +477,10 @@ void App::drawSearch(float w) {
             searchMore_ = true;
             searchFocus_ = true;  // keep typing focus, list stays open
         } else if (r.kind == kCopiesRow) {
-            expandedGroups_.insert(r.g->name + "@" + r.g->chrom + std::to_string(r.g->s));
+            // one expanded state: switch to the 16-row scrolling list with this group opened, main row on top
+            openGroup_ = r.g->name + "@" + r.g->chrom + std::to_string(r.g->s);
+            searchMore_ = true;
+            scrollToGroup_ = 1;
             searchFocus_ = true;
         } else {
             if (r.kind == kLocusRow) runQuery(q);

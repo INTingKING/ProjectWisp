@@ -23,6 +23,7 @@ struct AppOptions {
     bool reducedMotion = false;
     bool expandSv = false;  // --expand sv
     bool expandCard = false;  // --expand-card
+    std::string searchGroup;  // --search-group SYMBOL
     bool searchMore = false;  // --search-more: expanded "+N more" list
     std::string search;  // --search QUERY: open the search box with this text
     std::string gotoQuery;  // --goto QUERY: jump as if Enter was pressed
@@ -86,7 +87,8 @@ private:
     bool searchOpen_ = false, searchFocus_ = false;
     int searchSel_ = 0, searchScroll_ = 0;
     bool searchMore_ = false;  // "+N more" expanded into the scrollable list
-    std::set<std::string> expandedGroups_;  // extra-copy groups opened via "+N copies"
+    std::string openGroup_;  // extra-copy group opened via "+N copies" (sticky header in the expanded list)
+    int scrollToGroup_ = 0;  // >0: next frame scroll so the group main row is (n-1) rows above the top
     ImVec2 dropA_{-1, -1}, dropB_{-1, -1};  // dropdown rect (blocks region hover/click under it)
     double clock_ = 0;  // app time (s), advanced by io.DeltaTime
     bool animating_ = false;
