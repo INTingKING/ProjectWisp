@@ -1,0 +1,18 @@
+# pack	asset (release file name)	path under the data root	bytes	sha256
+core	overview.wov	tracks/overview.wov	375942	53f0deacea9bf80bfc29bdce0a576f598820a59a62fcb85b0a2013dcaec5f72d
+core	genes.gff.gz	tracks/genes.gff.gz	3810284	d2f42926e6a39dd53a39869ab5c19f186e2430e33310de1ca5fbde7f828e8e70
+core	genes.gff.gz.tbi	tracks/genes.gff.gz.tbi	311853	7f2512c134f103f143e8d91502deb30809700739eb39e59075b7c80ee1076232
+core	genes.idx.tsv.gz	tracks/genes.idx.tsv.gz	918029	475afddc2836badcf63e970ed7d04aae42c7f82d1a58291303aa5a3f818f44b2
+core	ccre.bed.gz	tracks/ccre.bed.gz	13673843	5f0bb14624edaa6dc204ea37dcf745cf483f02b8838067bfc224da668cfdfd0c
+core	ccre.bed.gz.tbi	tracks/ccre.bed.gz.tbi	943013	a32b8bc234109ee449c849d541c5c08eacc19d4e0973af8dcc0523b581de3ade
+core	notgrch38.bed.gz	tracks/notgrch38.bed.gz	5500	175684cd822cada6f073ee1d3e05356f892a6859253ea1d106a552b6abc8a931
+core	notgrch38.bed.gz.tbi	tracks/notgrch38.bed.gz.tbi	9394	e1501ede59344c0be55a059ccb352898a906c9962bf57945a629c4e5ff0f056a
+core	repeats.bed.gz	tracks/repeats.bed.gz	54205715	f723b34f7f47d47338f6c4da7d0cd1b918f62422845e46f1de60c48eb9fe26c4
+core	repeats.bed.gz.tbi	tracks/repeats.bed.gz.tbi	528093	90a05c277fa143f6d17e9c9f6ed8e92115fd8d08c028ba0a0a5a3d6c2a1b7b9a
+sv	sv.hprc.vcf.gz	tracks/sv.hprc.vcf.gz	90918472	7f52028092a3790cc0f9520a985beb3f79e1e564e050a20031dbf102c46d8041
+sv	sv.hprc.vcf.gz.tbi	tracks/sv.hprc.vcf.gz.tbi	422364	28c71b86f9dbe2fc1dd30ac5893f5c09b1155c0b7523d1ce24a7d0afc5e0aab2
+methyl	chm13v2.0_CpG_methylation.bw	tracks/chm13v2.0_CpG_methylation.bw	177219252	5e42ace2808c405e1001e5f5bf7ce3e2b4fbf1f2d65ff22f3b6db5e85b849bda
+genome	hs1.fa.bgz	hs1.fa.bgz	977220840	6f65d750c5c905886590d68bf127a5858cb9930e6d6e7f5264dc51efdecbc185
+genome	hs1.fa.bgz.fai	hs1.fa.bgz.fai	787	282449ec4cd2c8550629dc552bd8ef6279bd7e23934c57a3acd8772c0a2e949b
+genome	hs1.fa.bgz.gzi	hs1.fa.bgz.gzi	779320	9a8795eec78a3d682e3788c0d8eb78f598ed51cb6e1d90501e31e3e6b8a76924
+rsid	rsid.idx	packs/rsid/rsid.idx	396353599	fb71cea2fe69ec78ede6e0d69837f403660205d855476b3c8119fa5864a82778

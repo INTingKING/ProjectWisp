@@ -119,10 +119,17 @@ private:
     // background pack download: prebuilt rsid.idx from the GitHub data release, SHA-256 checked
     std::thread dlThread_;
     std::atomic<int> dlState_{0};  // 0 idle, 1 running, 2 done, 3 failed
-    std::atomic<long long> dlBytes_{0}, dlTotal_{0};
+    std::atomic<long long> dlDoneBytes_{0}, dlCurBytes_{0}, dlTotal_{0};  // finished files, current file, whole pack
     double dlT0_ = 0;  // virtual-clock start of the download (script mode progress)
     std::atomic<int> dlPhase_{0};  // 0 download, 1 verify
-    std::string dlPart_;           // file being downloaded (progress = its size)
+    struct PackFile { std::string pack, asset, path; long long bytes = 0; std::string sha; };
+    std::vector<PackFile> packs_;  // assets/data_packs.tsv: what each downloadable pack contains
+    std::string dlPack_;           // pack being (or last) downloaded
+    void loadPacks();
+    std::string packDest(const PackFile& f) const;
+    long long packBytes(const std::string& pack) const;
+    bool packInstalled(const std::string& pack) const;
+    void startDownload(const std::string& pack);
     std::mutex dlMu_;
     std::string dlMsg_;
     bool manualOpen_ = false;

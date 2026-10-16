@@ -1,4 +1,6 @@
 #include "ui/app.h"
+#include "util/download.h"
+#include "util/sha256.h"
 #include "imgui_internal.h"
 
 #include <algorithm>
@@ -146,6 +148,7 @@ void hoverCursor(ImDrawList* dl, float x, float y0, float y1) { dl->AddLine(ImVe
 
 bool App::init(const AppOptions& opt, std::string& err) {
     opt_ = opt;
+    loadPacks();
     svExpanded_ = opt.expandSv;
     cardSvExpanded_ = opt.expandCard;
     std::string tracks = opt.dataDir + "/tracks";
@@ -689,58 +692,89 @@ static std::map<std::string, std::string> readConf(const std::string& path) {
     return m;
 }
 
-static std::string sha256Of(const std::string& path) {  // system tool: sha256sum (Linux) or shasum (macOS)
-    std::string cmd = "(sha256sum '" + path + "' 2>/dev/null || shasum -a 256 '" + path + "') 2>/dev/null";
-    FILE* p = popen(cmd.c_str(), "r");
-    if (!p) return {};
-    char buf[160] = {};
-    std::string out = std::fgets(buf, sizeof buf, p) ? std::string(buf) : std::string();
-    pclose(p);
-    return out.substr(0, out.find_first_of(" \t\n"));
+void App::loadPacks() {
+    packs_.clear();
+    FILE* f = std::fopen((opt_.assetsDir + "/data_packs.tsv").c_str(), "r");
+    if (!f) return;
+    char line[1024];
+    while (std::fgets(line, sizeof line, f)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        char pack[64], asset[256], path[512], sha[80];
+        long long bytes = 0;
+        if (std::sscanf(line, "%63s %255s %511s %lld %79s", pack, asset, path, &bytes, sha) == 5) packs_.push_back({pack, asset, path, bytes, sha});
+    }
+    std::fclose(f);
 }
 
-void App::startPackDownload() {
+std::string App::packDest(const PackFile& f) const {
+    if (f.pack == "rsid" && !opt_.rsidPack.empty()) return opt_.rsidPack;
+    return opt_.dataDir + "/" + f.path;
+}
+
+long long App::packBytes(const std::string& pack) const {
+    long long t = 0;
+    for (auto& f : packs_) if (f.pack == pack) t += f.bytes;
+    return t;
+}
+
+bool App::packInstalled(const std::string& pack) const {
+    bool any = false;
+    std::error_code ec;
+    for (auto& f : packs_) {
+        if (f.pack != pack) continue;
+        any = true;
+        if ((long long)std::filesystem::file_size(packDest(f), ec) != f.bytes || ec) return false;
+    }
+    return any;
+}
+
+void App::startPackDownload() { startDownload("rsid"); }
+
+// Downloads every file of a pack from the GitHub data release (assets/data_release.conf DATA_BASE_URL, or
+// $WISP_DATA_BASE_URL for testing) into the data root, SHA-256 checked in-process (util/sha256), .part then rename.
+void App::startDownload(const std::string& pack) {
     if (dlState_ == 1) return;
     namespace fs = std::filesystem;
-    std::error_code ec;
     auto conf = readConf(opt_.assetsDir + "/data_release.conf");
     std::string base = std::getenv("WISP_DATA_BASE_URL") ? std::getenv("WISP_DATA_BASE_URL") : conf["DATA_BASE_URL"];  // env: testing
-    std::string want = conf["RSID_IDX_SHA256"];
-    long long bytes = std::atoll(conf["RSID_IDX_BYTES"].c_str());
-    if (base.empty() || want.empty()) { std::lock_guard<std::mutex> l(dlMu_); dlMsg_ = "assets/data_release.conf missing"; dlState_ = 3; return; }
-    std::string dest = opt_.rsidPack.empty() ? opt_.dataDir + "/packs/rsid/rsid.idx" : opt_.rsidPack;
-    fs::create_directories(fs::path(dest).parent_path(), ec);
-    dlPart_ = dest + ".part";
-    dlState_ = 1; dlBytes_ = 0; dlTotal_ = bytes; dlPhase_ = 0; dlT0_ = clock_;
-    if (dlThread_.joinable()) dlThread_.join();
-    dlThread_ = std::thread([this, base, want, dest] {
-        std::string cmd = "curl -fL --retry 3 -sS -o '" + dlPart_ + "' '" + base + "/rsid.idx' 2>&1";
-        FILE* pp = popen(cmd.c_str(), "r");
-        std::string err;
-        char line[512];
-        while (pp && std::fgets(line, sizeof line, pp)) err = line;
-        int rc = pp ? pclose(pp) : -1;
-        std::error_code ec2;
-        if (rc != 0) {
-            std::filesystem::remove(dlPart_, ec2);
-            std::lock_guard<std::mutex> l(dlMu_);
-            dlMsg_ = err.empty() ? "download failed" : err;
-            while (!dlMsg_.empty() && dlMsg_.back() == '\n') dlMsg_.pop_back();
-            dlState_ = 3;
-            return;
-        }
-        dlPhase_ = 1;  // verifying
-        std::string got = sha256Of(dlPart_);
-        if (got != want) {
-            std::filesystem::remove(dlPart_, ec2);
-            std::lock_guard<std::mutex> l(dlMu_);
-            dlMsg_ = "checksum mismatch (got " + got.substr(0, 12) + "...)";
-            dlState_ = 3;
-            return;
-        }
-        std::filesystem::rename(dlPart_, dest, ec2);
+    std::vector<PackFile> files;
+    for (auto& f : packs_) if (f.pack == pack) files.push_back(f);
+    if (base.empty() || files.empty()) {
         std::lock_guard<std::mutex> l(dlMu_);
-        if (ec2) { dlMsg_ = "could not move the pack into place"; dlState_ = 3; } else dlState_ = 2;
+        dlMsg_ = base.empty() ? "assets/data_release.conf missing" : "assets/data_packs.tsv has no '" + pack + "' files";
+        dlPack_ = pack;
+        dlState_ = 3;
+        return;
+    }
+    long long total = 0;
+    for (auto& f : files) total += f.bytes;
+    dlPack_ = pack;
+    dlState_ = 1; dlDoneBytes_ = 0; dlCurBytes_ = 0; dlTotal_ = total; dlPhase_ = 0; dlT0_ = clock_;
+    if (dlThread_.joinable()) dlThread_.join();
+    std::vector<std::pair<PackFile, std::string>> jobs;
+    for (auto& f : files) jobs.push_back({f, packDest(f)});
+    dlThread_ = std::thread([this, base, jobs] {
+        auto fail = [&](const std::string& m) {
+            std::lock_guard<std::mutex> l(dlMu_);
+            dlMsg_ = m;
+            dlState_ = 3;
+        };
+        for (auto& [f, dest] : jobs) {
+            std::error_code ec;
+            if ((long long)fs::file_size(dest, ec) == f.bytes && !ec) { dlDoneBytes_ += f.bytes; continue; }  // already there
+            fs::create_directories(fs::path(dest).parent_path(), ec);
+            std::string part = dest + ".part";
+            dlPhase_ = 0;
+            dlCurBytes_ = 0;
+            DownloadResult r = downloadFile(base + "/" + f.asset, part, "ProjectWisp: " + f.asset, &dlCurBytes_);
+            if (!r.ok) { fs::remove(part, ec); return fail(f.asset + ": " + r.err); }
+            if (r.sha256 != f.sha) { fs::remove(part, ec); return fail(f.asset + ": checksum mismatch (got " + r.sha256.substr(0, 12) + "...)"); }
+            fs::rename(part, dest, ec);
+            if (ec) return fail("could not move " + f.asset + " into place");
+            dlDoneBytes_ += f.bytes;
+            dlCurBytes_ = 0;
+        }
+        dlState_ = 2;
     });
 }
 
@@ -786,9 +820,7 @@ void App::drawPackCard(ImVec2 D) {
     if (rsid_.present()) {
         ImGui::TextColored(vec(kAccent), "Installed. Type an rs number in the search box.");
     } else if (st == 1) {
-        std::error_code ec;
-        long long b = (long long)std::filesystem::file_size(dlPart_, ec), t = dlTotal_;
-        if (ec) b = 0;
+        long long b = dlDoneBytes_ + dlCurBytes_, t = dlTotal_;
         int ph = dlPhase_;
         if (virtualClock_ >= 0) {  // script mode: progress from the virtual clock (20 MB/s), not the wall-time file size
             b = std::min<long long>(t, (long long)((clock_ - dlT0_) * 20000.0 * 1024.0));

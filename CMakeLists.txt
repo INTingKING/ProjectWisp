@@ -93,7 +93,7 @@ target_sources(wisp PRIVATE
   src/main.cpp
   src/render/vk_context.cpp src/render/fog.cpp src/render/png_write.cpp
   src/data/overview.cpp src/data/tracks.cpp src/data/genome.cpp src/data/geneindex.cpp src/data/rsid.cpp
-  src/ui/app.cpp src/ui/theme.cpp
+  src/ui/app.cpp src/ui/theme.cpp src/util/sha256.cpp src/util/download.cpp
   ${SHADER_HEADERS})
 target_include_directories(wisp PRIVATE src ${SHADER_OUT} ${stb_SOURCE_DIR} ${vma_SOURCE_DIR}/include)
 target_link_libraries(wisp PRIVATE imgui vk-bootstrap::vk-bootstrap Vulkan::Vulkan PkgConfig::HTS libBigWig::libbigwig)
