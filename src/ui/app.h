@@ -99,6 +99,7 @@ private:
     std::thread dlThread_;
     std::atomic<int> dlState_{0};  // 0 idle, 1 running, 2 done, 3 failed
     std::atomic<long long> dlBytes_{0}, dlTotal_{0};
+    double dlT0_ = 0;  // virtual-clock start of the download (script mode progress)
     std::atomic<int> dlPhase_{0};  // 0 download, 1 verify
     std::string dlPart_;           // file being downloaded (progress = its size)
     std::mutex dlMu_;

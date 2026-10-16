@@ -627,7 +627,7 @@ void App::startPackDownload() {
     std::string dest = opt_.rsidPack.empty() ? opt_.dataDir + "/packs/rsid/rsid.idx" : opt_.rsidPack;
     fs::create_directories(fs::path(dest).parent_path(), ec);
     dlPart_ = dest + ".part";
-    dlState_ = 1; dlBytes_ = 0; dlTotal_ = bytes; dlPhase_ = 0;
+    dlState_ = 1; dlBytes_ = 0; dlTotal_ = bytes; dlPhase_ = 0; dlT0_ = clock_;
     if (dlThread_.joinable()) dlThread_.join();
     dlThread_ = std::thread([this, base, want, dest] {
         std::string cmd = "curl -fL --retry 3 -sS -o '" + dlPart_ + "' '" + base + "/rsid.idx' 2>&1";
@@ -706,6 +706,10 @@ void App::drawPackCard(ImVec2 D) {
         long long b = (long long)std::filesystem::file_size(dlPart_, ec), t = dlTotal_;
         if (ec) b = 0;
         int ph = dlPhase_;
+        if (virtualClock_ >= 0) {  // script mode: progress from the virtual clock (20 MB/s), not the wall-time file size
+            b = std::min<long long>(t, (long long)((clock_ - dlT0_) * 20000.0 * 1024.0));
+            ph = b >= t ? 1 : 0;
+        }
         float frac = ph == 0 ? (t > 0 ? std::min(1.f, float(double(b) / double(t))) : 0.f) : 1.f;
         char over[96];
         if (ph == 0) std::snprintf(over, sizeof over, "Downloading %.0f / %.0f MB", b / 1048576.0, t / 1048576.0);
@@ -867,7 +871,7 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     const float stripH = 6.f, gap = 3.f, gutter = 40.f;
     const float colH = n * stripH + (n - 1) * gap;
     const float top = A.y + std::max(4.f, ((B.y - A.y) - colH) * 0.5f);
-    const float miniW = 40.f, miniGap = 8.f;
+    const float miniW = 40.f, miniGap = 12.f;
     const float sx0 = A.x + 12 + gutter, sxMax = B.x - 14 - miniW - miniGap;
     double maxLen = 0;
     for (int ci : order_) maxLen = std::max(maxLen, double(ov_.chroms()[ci].length));
@@ -876,6 +880,13 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     std::vector<Hatch> hatches;
     ImGuiIO& io = ImGui::GetIO();
     const double bin = ov_.binSize();
+    {  // header above the mini-bar column
+        ImGui::PushFont(fonts().monoTiny);
+        const char* h = "share";
+        float hx = B.x - 14 - miniW * 0.5f - ImGui::CalcTextSize(h).x * 0.5f;
+        dl->AddText(ImVec2(hx, top - 12), col(0x6B7280), h);
+        ImGui::PopFont();
+    }
     ImGui::PushFont(fonts().monoSmall);
     for (int r = 0; r < n; ++r) {
         int ci = order_[r];
@@ -921,7 +932,7 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         }
         // per-chromosome mini bar at the strip's right end: known | introns+repeats | nothing known
         {
-            float mx = sx0 + sw + miniGap, x = mx;
+            float mx = B.x - 14 - miniW, x = mx;  // one aligned column at the right edge
             double sh[3] = {ch.share(kExon) + ch.share(kCcre), ch.share(kIntron) + ch.share(kRepeat), ch.share(kNothing)};
             unsigned cc[3] = {kColKnown, kColIntron, kColFog};
             double tot = sh[0] + sh[1] + sh[2];
@@ -1298,12 +1309,14 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // Expanded: greedy sub-rows, 6 px + 1 px gap, max 8 rows, '+N more' for overflow.
     const float svH = svExpanded_ ? std::max(20.f, svRowsLast_ * 7.f - 1.f + 6.f) : 20.f;
     const float svHdrY = varY + varH + 6, svY = svHdrY + hdrH;
+    bool uiClaim = false;  // a UI control under the mouse consumes it: no map hover, pan or pin
     auto svT0 = std::chrono::steady_clock::now();
     laneLabel(svY, std::min(svH, 20.f), "SVs");
     {  // expand / collapse chevron at the right of the header line
         ImVec2 c(tx1 - 6, svHdrY + 7);
         ImGui::SetCursorScreenPos(ImVec2(tx1 - 16, svHdrY - 1));
         if (ImGui::InvisibleButton("##svexpand", ImVec2(16, 15))) svExpanded_ = !svExpanded_;
+        uiClaim = ImGui::IsItemHovered() || ImGui::IsItemActive() || ImGui::IsItemDeactivated();
         unsigned cc = ImGui::IsItemHovered() ? kAccent : kMuted;
         if (svExpanded_) dl->AddTriangleFilled(ImVec2(c.x - 4, c.y + 2), ImVec2(c.x + 4, c.y + 2), ImVec2(c.x, c.y - 3), col(cc));
         else dl->AddTriangleFilled(ImVec2(c.x - 4, c.y - 2), ImVec2(c.x + 4, c.y - 2), ImVec2(c.x, c.y + 3), col(cc));
@@ -1456,7 +1469,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // interaction over the lanes
     ImGui::SetCursorScreenPos(ImVec2(tx0, tracksTop - 26));
     ImGui::InvisibleButton("##region", ImVec2(W, std::max(10.f, tracksBottom - tracksTop + 26)));
-    if (ImGui::IsItemHovered() && !ImGui::IsMouseHoveringRect(dropA_, dropB_, false)) {
+    if (!uiClaim && ImGui::IsItemHovered() && !ImGui::IsMouseHoveringRect(dropA_, dropB_, false)) {
         double pos = viewS_ + (io.MousePos.x - tx0) * bpPerPx;
         hover_ = {true, viewCi_, int64_t(std::clamp(pos, 0.0, double(ch.length) - 1)), false};
         if (io.MouseWheel != 0) {
@@ -1467,11 +1480,11 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         float x = io.MousePos.x;
         dl->AddLine(ImVec2(x, tracksTop - 6), ImVec2(x, tracksBottom + 4), col(kAccent, 0.6f));
     }
-    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.f)) {
+    if (!uiClaim && ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.f)) {
         double d = -io.MouseDelta.x * bpPerPx;
         setView(viewCi_, viewS_ + d, viewE_ + d);
     }
-    if (ImGui::IsItemDeactivated() && io.MouseDragMaxDistanceSqr[0] < 9.f && hover_.valid) {
+    if (!uiClaim && ImGui::IsItemDeactivated() && io.MouseDragMaxDistanceSqr[0] < 9.f && hover_.valid) {
         // second click on the pinned spot unpins; elsewhere re-pins
         bool same = pinned_.valid && !pinned_.overview && pinned_.ci == hover_.ci &&
                     std::abs(double(pinned_.pos - hover_.pos)) <= std::max(1.0, 3.0 * bpPerPx);
