@@ -848,9 +848,13 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             else dl->AddTriangleFilled(ImVec2(x - 3, y0), ImVec2(x + 3, y0), ImVec2(x, y0 + 3), col(0x5B8DEF, a));
         };
         if (!svExpanded_) {
-            std::vector<const Sv*> bars;
-            for (auto* v : vis.svs) if (v->type != SvType::Ins) bars.push_back(v);
-            std::stable_sort(bars.begin(), bars.end(), [](auto* a2, auto* b2) { return (a2->e - a2->s) > (b2->e - b2->s); });
+            // draw order: deletions (and complex), insertions, then inversions last; larger first within a type
+            auto rank = [](SvType t) { return t == SvType::Inv ? 2 : t == SvType::Ins ? 1 : 0; };
+            std::vector<const Sv*> bars(vis.svs.begin(), vis.svs.end());
+            std::stable_sort(bars.begin(), bars.end(), [&](auto* a2, auto* b2) {
+                if (rank(a2->type) != rank(b2->type)) return rank(a2->type) < rank(b2->type);
+                return (a2->e - a2->s) > (b2->e - b2->s);
+            });
             // union of px extents already drawn (disjoint, keyed by start): overlap query + merge in O(log n)
             std::map<float, float> drawn;
             for (auto* v : bars) {
@@ -859,13 +863,13 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
                 auto it = drawn.upper_bound(x0);
                 bool covered = (it != drawn.end() && it->first < x1);
                 if (it != drawn.begin() && std::prev(it)->second > x0) covered = true;
-                drawBar(v, x0, x1, svY + 5, svY + svH - 3, covered);
+                if (v->type == SvType::Ins) drawIns(v, svY + 6, svY + svH - 2, true);
+                else drawBar(v, x0, x1, svY + 5, svY + svH - 3, covered);
                 float m0 = x0, m1 = x1;  // merge [x0,x1) into the union
                 if (it != drawn.begin() && std::prev(it)->second >= x0) { --it; m0 = std::min(m0, it->first); }
                 while (it != drawn.end() && it->first <= x1) { m1 = std::max(m1, it->second); it = drawn.erase(it); }
                 drawn[m0] = m1;
             }
-            for (auto* v : vis.svs) if (v->type == SvType::Ins) drawIns(v, svY + 6, svY + svH - 2, true);
             svRowsLast_ = 1;
         } else {
             std::vector<const Sv*> all(vis.svs.begin(), vis.svs.end());
@@ -1094,28 +1098,18 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
             // structural variants touching this base (insertions: within 1 bp of the anchor)
             Visible sv;
             gather(p.ci, std::max<int64_t>(0, p.pos - 1), p.pos + 2, sv);
-            std::map<std::tuple<int, int64_t, int>, int> seen;  // identical alleles (same type/length/AC) shown once with a count
-            std::vector<const Sv*> hits;
             for (auto* x : sv.svs) {
                 bool hit = x->type == SvType::Ins ? std::llabs(x->s - p.pos) <= 1 : (x->s <= p.pos && p.pos < x->e);
                 if (!hit) continue;
-                if (seen[{int(x->type), x->len, x->ac}]++ == 0) hits.push_back(x);
-            }
-            for (auto* x : hits) {
-                int dup = seen[{int(x->type), x->len, x->ac}];
                 const char* kind = x->type == SvType::Ins ? "Insertion" : x->type == SvType::Del ? "Deletion" : x->type == SvType::Inv ? "Inversion" : "Complex change";
                 unsigned c = x->type == SvType::Ins ? 0x5B8DEF : x->type == SvType::Del ? 0xE8A13A : x->type == SvType::Inv ? 0xB07CFF : 0x8A8F99;
                 swatch(c);
-                if (x->af >= 0)
-                    ImGui::TextColored(vec(kText, 0.95f), "%s of %s bp, carried by %.0f%% of the pangenome haplotypes (%d of %d)", kind,
-                                       commas(x->len).c_str(), x->af * 100.0, x->ac, x->an);
+                const char* atLeast = x->merged > 1 ? "at least " : "";  // merged records: max AC is a lower bound
+                if (x->an > 0)
+                    ImGui::TextColored(vec(kText, 0.95f), "%s of %s bp, found on %s%.0f%% of chromosome copies (%d of %d)", kind,
+                                       commas(x->len).c_str(), atLeast, 100.0 * x->ac / x->an, x->ac, x->an);
                 else
                     ImGui::TextColored(vec(kText, 0.95f), "%s of %s bp in the pangenome", kind, commas(x->len).c_str());
-                if (dup > 1) {
-                    ImGui::PushFont(fonts().monoSmall);
-                    ImGui::TextColored(vec(kMuted), "  x%d near-identical alleles at this site", dup);
-                    ImGui::PopFont();
-                }
             }
         }
         if (!v.genes.empty()) {
