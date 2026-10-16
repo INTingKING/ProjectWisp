@@ -596,7 +596,7 @@ void App::drawPackCard(ImVec2 D) {
     ImGui::PopFont();
     ImGui::TextColored(vec(kText, 0.9f), "%s on disk, %s rsIDs", kRsidPackSize, kRsidPackCount);
     ImGui::PushTextWrapPos(w - 16);
-    ImGui::TextColored(vec(kMuted), "dbSNP 155 on T2T-CHM13 (UCSC), common variants only (1000 Genomes MAF >= 1%%). "
+    ImGui::TextColored(vec(kMuted), "dbSNP 155 on T2T-CHM13 (UCSC), common variants only (minor allele >= 1%% in any 1000 Genomes population). "
                                     "Built by streaming the %s source file; nothing else is kept.", kRsidPackStream);
     ImGui::PopTextWrapPos();
     ImGui::Spacing();

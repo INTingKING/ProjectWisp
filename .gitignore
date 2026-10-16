@@ -1,4 +1,4 @@
-data/
+/data/
 *.fa
 *.fa.gz
 *.bgz
