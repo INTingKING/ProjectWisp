@@ -3,6 +3,7 @@
 #include <imgui.h>
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,7 @@ struct AppOptions {
     bool reducedMotion = false;
     bool expandSv = false;  // --expand sv
     bool expandCard = false;  // --expand-card
+    bool searchMore = false;  // --search-more: expanded "+N more" list
     std::string search;  // --search QUERY: open the search box with this text
     std::string gotoQuery;  // --goto QUERY: jump as if Enter was pressed
 };
@@ -82,7 +84,10 @@ private:
     GeneIndex genes_;
     char searchBuf_[96] = {};
     bool searchOpen_ = false, searchFocus_ = false;
-    int searchSel_ = 0;
+    int searchSel_ = 0, searchScroll_ = 0;
+    bool searchMore_ = false;  // "+N more" expanded into the scrollable list
+    std::set<std::string> expandedGroups_;  // extra-copy groups opened via "+N copies"
+    ImVec2 dropA_{-1, -1}, dropB_{-1, -1};  // dropdown rect (blocks region hover/click under it)
     double clock_ = 0;  // app time (s), advanced by io.DeltaTime
     bool animating_ = false;
     double animT0_ = 0, animS0_ = 0, animE0_ = 0, animS1_ = 0, animE1_ = 0;

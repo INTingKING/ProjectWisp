@@ -162,6 +162,7 @@ bool App::init(const AppOptions& opt, std::string& err) {
     if (!opt.search.empty()) {
         std::snprintf(searchBuf_, sizeof searchBuf_, "%s", opt.search.c_str());
         searchOpen_ = searchFocus_ = true;
+        searchMore_ = opt.searchMore;
     }
     if (!opt.gotoQuery.empty() && !runQuery(opt.gotoQuery)) { err = "no match for --goto " + opt.gotoQuery; return false; }
     return true;
@@ -325,7 +326,7 @@ void App::drawSearch(float w) {
     bool enter = ImGui::InputTextWithHint("##search", "Gene or chr22:20,340,000", searchBuf_, sizeof searchBuf_,
                                           ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
     bool active = ImGui::IsItemActive();
-    if (ImGui::IsItemEdited()) { searchOpen_ = true; searchSel_ = 0; }
+    if (ImGui::IsItemEdited()) { searchOpen_ = true; searchSel_ = 0; searchScroll_ = 0; searchMore_ = false; expandedGroups_.clear(); }
     if (ImGui::IsItemActivated()) searchOpen_ = true;
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar(3);
@@ -334,30 +335,74 @@ void App::drawSearch(float w) {
 
     std::string q = searchBuf_;
     bool hasText = q.find_first_not_of(' ') != std::string::npos;
-    if (!searchOpen_ || !hasText) return;
+    if (!searchOpen_ || !hasText) { dropA_ = dropB_ = ImVec2(-1, -1); return; }
     // rows: a coordinate row, gene hits, or the no-match row
-    struct Row { std::string label, sub, tag; const GeneEntry* g = nullptr; bool locus = false; };
+    enum Kind { kGeneRow, kLocusRow, kMoreRow, kCopiesRow };
+    struct Row { std::string label, sub, tag; const GeneEntry* g = nullptr; Kind kind = kGeneRow; int n = 0; };
     std::vector<Row> rows;
+    const int cap = 8, maxVisible = 16;
     int ci; double s, e;
     if (q.find(':') != std::string::npos && parseLocus(q, ci, s, e)) {
         std::string t = ov_.chroms()[ci].name + ":" + commas(int64_t(s) + 1);
         if (e - s > 1) t += "-" + commas(int64_t(e));
-        rows.push_back({"Go to", t, "", nullptr, true});
+        rows.push_back({"Go to", t, "", nullptr, kLocusRow});
     } else {
-        for (auto& h : genes_.search(q, 8)) {
+        auto hits = genes_.search(q, 2000);  // all matches (bounded); main copies already followed by their extra copies
+        auto geneRow = [&](const GeneHit& h) {
             Row r{h.g->name, h.g->chrom + ":" + commas(h.g->s + 1), "", h.g};
             if (h.tier == 2) r.tag = "alias of " + h.g->name, r.label = h.alias;
-            rows.push_back(r);
+            return r;
+        };
+        // split hits into groups: a main copy plus the extra copies that follow it (same symbol)
+        std::vector<std::pair<size_t, size_t>> groups;
+        for (size_t i = 0; i < hits.size();) {
+            size_t j = i + 1;
+            if (!hits[i].g->extra)
+                while (j < hits.size() && hits[j].g->extra && hits[j].g->name == hits[i].g->name) ++j;
+            groups.push_back({i, j});
+            i = j;
+        }
+        size_t shown = 0;
+        bool limited = !searchMore_ && hits.size() > size_t(cap);
+        int budget = limited ? cap - 1 : INT32_MAX;  // last row becomes '+N more'
+        for (auto [i, j] : groups) {
+            if (budget <= 0) break;
+            rows.push_back(geneRow(hits[i]));
+            ++shown; --budget;
+            size_t copies = j - i - 1;
+            if (!copies) continue;
+            bool open = expandedGroups_.count(hits[i].g->name + "@" + hits[i].g->chrom + std::to_string(hits[i].g->s)) > 0;
+            if (open || int(copies) <= budget || !limited) {
+                for (size_t k = i + 1; k < j; ++k) rows.push_back(geneRow(hits[k]));
+                shown += copies; budget -= int(copies);
+            } else if (budget > 0) {
+                Row r{"+" + std::to_string(copies) + (copies == 1 ? " copy" : " copies"), "", "", hits[i].g, kCopiesRow, int(copies)};
+                rows.push_back(r);
+                shown += copies; --budget;  // counted as represented, not in '+N more'
+            } else break;
+        }
+        if (limited && shown < hits.size()) {
+            int n = int(hits.size() - shown);
+            rows.push_back({"+" + std::to_string(n) + " more", "", "", nullptr, kMoreRow, n});
         }
     }
     const float rh = 28;
+    int visible = std::min<int>(int(rows.size()), maxVisible);
     if (!rows.empty()) {
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) searchSel_ = std::min(int(rows.size()) - 1, searchSel_ + 1);
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) searchSel_ = std::max(0, searchSel_ - 1);
         searchSel_ = std::clamp(searchSel_, 0, int(rows.size()) - 1);
     }
-    float nr = float(std::max<size_t>(1, rows.size()));
+    float nr = float(std::max(1, visible));
     ImVec2 d0(a.x, a.y + bh + 4), d1(a.x + bw, a.y + bh + 4 + nr * rh + 8);
+    dropA_ = d0; dropB_ = d1;
+    int maxScroll = std::max(0, int(rows.size()) - visible);
+    if (ImGui::IsMouseHoveringRect(d0, d1, false) && io.MouseWheel != 0) searchScroll_ -= int(io.MouseWheel * 3);
+    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow) || ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {  // keep selection in view
+        if (searchSel_ < searchScroll_) searchScroll_ = searchSel_;
+        if (searchSel_ >= searchScroll_ + visible) searchScroll_ = searchSel_ - visible + 1;
+    }
+    searchScroll_ = std::clamp(searchScroll_, 0, maxScroll);
     fg->AddRectFilled(d0, d1, col(kPanel), 6);
     fg->AddRect(d0, d1, col(kBorder), 6);
     int clicked = -1;
@@ -365,16 +410,22 @@ void App::drawSearch(float w) {
         std::string t = "No gene called " + q + " in hs1";
         fg->AddText(fonts().ui, 15, ImVec2(d0.x + 12, d0.y + 4 + (rh - 15) * 0.5f), col(0x8A8F99), t.c_str());
     }
-    for (int i = 0; i < int(rows.size()); ++i) {
-        ImVec2 r0(d0.x + 4, d0.y + 4 + i * rh), r1(d1.x - 4, r0.y + rh);
+    fg->PushClipRect(d0, d1, true);
+    for (int i = searchScroll_; i < std::min(int(rows.size()), searchScroll_ + visible); ++i) {
+        const Row& rw = rows[size_t(i)];
+        ImVec2 r0(d0.x + 4, d0.y + 4 + (i - searchScroll_) * rh), r1(d1.x - 4, r0.y + rh);
         bool hov = ImGui::IsMouseHoveringRect(r0, r1, false);
         if (hov && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) searchSel_ = i;
         if (hov && ImGui::IsMouseClicked(0)) clicked = i;
         if (i == searchSel_) fg->AddRectFilled(r0, r1, col(kHover), 4);
         float ty = r0.y + (rh - 15) * 0.5f;
-        fg->AddText(fonts().ui, 15, ImVec2(r0.x + 8, ty - 1), col(kText), rows[i].label.c_str());
-        float lw = fonts().ui->CalcTextSizeA(15, FLT_MAX, 0, rows[i].label.c_str()).x;
-        fg->AddText(fonts().mono, 13, ImVec2(r0.x + 8 + lw + 10, ty + 1), col(0x8A8F99), rows[i].sub.c_str());
+        if (rw.kind == kMoreRow || rw.kind == kCopiesRow) {
+            fg->AddText(fonts().ui, 15, ImVec2(r0.x + 8 + (rw.kind == kCopiesRow ? 16 : 0), ty - 1), col(0x8A8F99), rw.label.c_str());
+            continue;
+        }
+        fg->AddText(fonts().ui, 15, ImVec2(r0.x + 8, ty - 1), col(kText), rw.label.c_str());
+        float lw = fonts().ui->CalcTextSizeA(15, FLT_MAX, 0, rw.label.c_str()).x;
+        fg->AddText(fonts().mono, 13, ImVec2(r0.x + 8 + lw + 10, ty + 1), col(0x8A8F99), rw.sub.c_str());
         float px = r1.x - 4;
         auto pill = [&](const std::string& t, bool extra) {
             float tw = fonts().monoSmall->CalcTextSizeA(11, FLT_MAX, 0, t.c_str()).x;
@@ -389,26 +440,41 @@ void App::drawSearch(float w) {
             }
             px = p0.x - 4;
         };
-        if (rows[i].g && rows[i].g->extra) pill("extra copy", true);
-        if (!rows[i].tag.empty()) pill(rows[i].tag, false);
+        if (rw.g && rw.g->extra) pill("extra copy", true);
+        if (!rw.tag.empty()) pill(rw.tag, false);
     }
+    if (maxScroll > 0) {  // scrollbar
+        float h = d1.y - d0.y - 8, th = h * float(visible) / float(rows.size());
+        float ty = d0.y + 4 + (h - th) * float(searchScroll_) / float(maxScroll);
+        fg->AddRectFilled(ImVec2(d1.x - 5, ty), ImVec2(d1.x - 2, ty + th), col(kBorder), 2);
+    }
+    fg->PopClipRect();
     if (clicked >= 0) { searchSel_ = clicked; enter = true; }
     if (enter && !rows.empty()) {
         const Row& r = rows[size_t(searchSel_)];
-        if (r.locus) runQuery(q);
-        else {
-            int gci = ov_.find(r.g->chrom);
-            if (gci >= 0) {
-                double pad = double(r.g->e - r.g->s) * 0.10;
-                jumpTo(gci, double(r.g->s) - pad, double(r.g->e) + pad);
-                hlName_ = r.g->name; hlChrom_ = r.g->chrom; hlS_ = r.g->s; hlT0_ = clock_;
+        if (r.kind == kMoreRow) {
+            searchMore_ = true;
+            searchFocus_ = true;  // keep typing focus, list stays open
+        } else if (r.kind == kCopiesRow) {
+            expandedGroups_.insert(r.g->name + "@" + r.g->chrom + std::to_string(r.g->s));
+            searchFocus_ = true;
+        } else {
+            if (r.kind == kLocusRow) runQuery(q);
+            else {
+                int gci = ov_.find(r.g->chrom);
+                if (gci >= 0) {
+                    double pad = double(r.g->e - r.g->s) * 0.10;
+                    jumpTo(gci, double(r.g->s) - pad, double(r.g->e) + pad);
+                    hlName_ = r.g->name; hlChrom_ = r.g->chrom; hlS_ = r.g->s; hlT0_ = clock_;
+                }
             }
+            searchOpen_ = false;
+            ImGui::SetWindowFocus(nullptr);
         }
-        searchOpen_ = false;
-        ImGui::SetWindowFocus(nullptr);
     } else if (!active && ImGui::IsMouseClicked(0) && !ImGui::IsMouseHoveringRect(d0, d1, false)) {
         searchOpen_ = false;
     }
+    if (!searchOpen_) dropA_ = dropB_ = ImVec2(-1, -1);
 }
 
 void App::drawTopBar(ImDrawList* dl, float w) {
@@ -1121,7 +1187,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // interaction over the lanes
     ImGui::SetCursorScreenPos(ImVec2(tx0, tracksTop - 26));
     ImGui::InvisibleButton("##region", ImVec2(W, std::max(10.f, tracksBottom - tracksTop + 26)));
-    if (ImGui::IsItemHovered()) {
+    if (ImGui::IsItemHovered() && !ImGui::IsMouseHoveringRect(dropA_, dropB_, false)) {
         double pos = viewS_ + (io.MousePos.x - tx0) * bpPerPx;
         hover_ = {true, viewCi_, int64_t(std::clamp(pos, 0.0, double(ch.length) - 1)), false};
         if (io.MouseWheel != 0) {

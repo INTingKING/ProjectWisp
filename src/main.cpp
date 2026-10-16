@@ -42,6 +42,7 @@ int main(int argc, char** argv) {
         else if (a == "--pin") opt.pin = next();
         else if (a == "--variants") opt.variants = next();
         else if (a == "--search") opt.search = next();
+        else if (a == "--search-more") opt.searchMore = true;
         else if (a == "--goto") opt.gotoQuery = next();
         else if (a == "--expand-card") opt.expandCard = true;
         else if (a == "--expand") { std::string t = next(); if (t == "sv") opt.expandSv = true; }
