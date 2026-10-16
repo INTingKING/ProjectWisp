@@ -192,6 +192,7 @@ void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
     for (int64_t t = s / TrackStore::kTile; t <= (e - 1) / TrackStore::kTile; ++t) {
         for (int k = 0; k < kTrackCount; ++k) {
             if (k == int(Track::Variants) && !store_.hasVariants()) continue;
+            if (k == int(Track::Sv) && !store_.hasSv()) continue;
             TilePtr tile = store_.request(Track(k), chrom, t);
             if (!tile) { v.loading[k] = true; continue; }
             v.hold.push_back(tile);
@@ -202,6 +203,7 @@ void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
             for (auto& x : tile->repeats) if (x.e > s && x.s < e) v.repeats.push_back(&x);
             for (auto& x : tile->notin) if (x.e > s && x.s < e) v.notin.push_back(&x);
             for (auto& x : tile->variants) if (x.e > s && x.s < e) v.variants.push_back(&x);
+            for (auto& x : tile->svs) if (x.e > s && x.s < e) v.svs.push_back(&x);
         }
     }
 }
@@ -501,7 +503,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // track heights (genes 48, cCRE 24, repeats 24); each track has a 14px header line for hints
     const float varH = 20;
     const float hdrH = 14, geneTrackH = 48, ccreH = 24, repH = 24, niH = 14;
-    const float stackH = 26 + (10 + 8) + (hdrH + 20 + 6) + (hdrH + geneTrackH + 6) + (hdrH + ccreH + 6) + (hdrH + repH + 6) + niH + (6 + hdrH + varH);
+    const float stackH = 26 + (10 + 8) + (hdrH + 20 + 6) + (hdrH + geneTrackH + 6) + (hdrH + ccreH + 6) + (hdrH + repH + 6) + niH + (6 + hdrH + varH) + (6 + hdrH + varH);
     const float availTop = A.y + 40, availBot = B.y - 30;
     float y = availTop + std::max(0.f, (availBot - availTop - stackH) * 0.5f);
     auto hint = [&](float hy, const char* t) {
@@ -755,7 +757,54 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
             }
         }
     }
-    const float tracksBottom = varY + varH;
+    // structural variants (HPRC pangenome): ins = 2 px tick + caret, del/inv/complex = bars
+    const float svH = 20, svHdrY = varY + varH + 6, svY = svHdrY + hdrH;
+    laneLabel(svY, svH, "SVs");
+    if (!store_.hasSv()) {
+        hint(svHdrY, "no SV file (run scripts/fetch_sv.sh)");
+    } else if (!detailed) {
+        hint(svHdrY, "zoom below 3 Mb to load structural variants");
+    } else if (vis.loading[int(Track::Sv)]) {
+        hint(svHdrY, "loading structural variants...");
+    } else {
+        int nIns = 0, nDel = 0, nInv = 0, nCx = 0;
+        for (auto* v : vis.svs) {
+            float a = v->af >= 0.01f ? 1.f : 0.35f;
+            float x0 = std::max(tx0, X(double(v->s))), x1 = std::min(tx1, std::max(X(double(v->e)), X(double(v->s)) + 2.f));
+            switch (v->type) {
+                case SvType::Ins: ++nIns; break;
+                case SvType::Del:
+                    ++nDel;
+                    dl->AddRectFilled(ImVec2(x0, svY + 5), ImVec2(x1, svY + svH - 3), col(0xE8A13A, a), 2);
+                    break;
+                case SvType::Inv:
+                    ++nInv;
+                    dl->AddRectFilled(ImVec2(x0, svY + 5), ImVec2(x1, svY + svH - 3), col(0xB07CFF, a * 0.55f), 2);
+                    dl->PushClipRect(ImVec2(x0, svY + 5), ImVec2(x1, svY + svH - 3), true);
+                    for (float lx = x0 - svH; lx < x1; lx += 5)
+                        dl->AddLine(ImVec2(lx, svY + svH - 3), ImVec2(lx + svH - 8, svY + 5), col(0xB07CFF, a), 1.f);
+                    dl->PopClipRect();
+                    break;
+                case SvType::Complex:
+                    ++nCx;
+                    dl->AddRectFilled(ImVec2(x0, svY + 5), ImVec2(x1, svY + svH - 3), col(0x8A8F99, a), 2);
+                    break;
+            }
+        }
+        for (auto* v : vis.svs) {  // insertions on top: fixed-width tick + caret
+            if (v->type != SvType::Ins) continue;
+            float a = v->af >= 0.01f ? 1.f : 0.35f;
+            float x = X(double(v->s) + 1.0);
+            if (x < tx0 || x > tx1) continue;
+            dl->AddRectFilled(ImVec2(x - 1, svY + 6), ImVec2(x + 1, svY + svH - 2), col(0x5B8DEF, a));
+            dl->AddTriangleFilled(ImVec2(x - 4, svY + 1), ImVec2(x + 4, svY + 1), ImVec2(x, svY + 6), col(0x5B8DEF, a));
+        }
+        char h[200];
+        if (vis.svs.empty()) std::snprintf(h, sizeof h, "no structural variants >= 50 bp here (HPRC pangenome)");
+        else std::snprintf(h, sizeof h, "HPRC pangenome SVs >= 50 bp: %d ins, %d del, %d inv, %d complex  |  bright = AF >= 1%%", nIns, nDel, nInv, nCx);
+        hint(svHdrY, h);
+    }
+    const float tracksBottom = svY + svH;
 
     // fog over 'nothing known' columns, spanning all lanes
     for (int p = 0; p < cols;) {
@@ -775,6 +824,7 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         loadingFog(vis.loading[2], repY, repH);
         loadingFog(vis.loading[3], niY, niH);
         loadingFog(vis.loading[int(Track::Variants)], varY, varH);
+        loadingFog(vis.loading[int(Track::Sv)], svY, svH);
         loadingFog(vis.loading[0] || vis.loading[1] || vis.loading[2], catY, catH);
     }
     dl->PushClipRect(ImVec2(tx0, A.y), ImVec2(tx1, B.y), true);
@@ -938,6 +988,34 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
         // ---------- what it is ----------
         separator();
         heading("WHAT IT IS");
+        {
+            // structural variants touching this base (insertions: within 1 bp of the anchor)
+            Visible sv;
+            gather(p.ci, std::max<int64_t>(0, p.pos - 1), p.pos + 2, sv);
+            std::map<std::tuple<int, int64_t, int>, int> seen;  // identical alleles (same type/length/AC) shown once with a count
+            std::vector<const Sv*> hits;
+            for (auto* x : sv.svs) {
+                bool hit = x->type == SvType::Ins ? std::llabs(x->s - p.pos) <= 1 : (x->s <= p.pos && p.pos < x->e);
+                if (!hit) continue;
+                if (seen[{int(x->type), x->len, x->ac}]++ == 0) hits.push_back(x);
+            }
+            for (auto* x : hits) {
+                int dup = seen[{int(x->type), x->len, x->ac}];
+                const char* kind = x->type == SvType::Ins ? "Insertion" : x->type == SvType::Del ? "Deletion" : x->type == SvType::Inv ? "Inversion" : "Complex change";
+                unsigned c = x->type == SvType::Ins ? 0x5B8DEF : x->type == SvType::Del ? 0xE8A13A : x->type == SvType::Inv ? 0xB07CFF : 0x8A8F99;
+                swatch(c);
+                if (x->af >= 0)
+                    ImGui::TextColored(vec(kText, 0.95f), "%s of %s bp, carried by %.0f%% of the pangenome haplotypes (%d of %d)", kind,
+                                       commas(x->len).c_str(), x->af * 100.0, x->ac, x->an);
+                else
+                    ImGui::TextColored(vec(kText, 0.95f), "%s of %s bp in the pangenome", kind, commas(x->len).c_str());
+                if (dup > 1) {
+                    ImGui::PushFont(fonts().monoSmall);
+                    ImGui::TextColored(vec(kMuted), "  x%d near-identical alleles at this site", dup);
+                    ImGui::PopFont();
+                }
+            }
+        }
         if (!v.genes.empty()) {
             for (auto* g : v.genes) {
                 // exon/intron number from merged exon blocks of this gene (union over transcripts)

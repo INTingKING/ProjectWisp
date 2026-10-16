@@ -43,6 +43,7 @@ private:
         std::vector<const Repeat*> repeats;
         std::vector<const Interval*> notin;
         std::vector<const Variant*> variants;
+        std::vector<const Sv*> svs;
         bool loading[kTrackCount] = {};
         std::vector<TilePtr> hold;
     };

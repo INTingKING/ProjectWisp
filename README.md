@@ -55,6 +55,8 @@ No GPU? `mesa-vulkan-drivers` provides lavapipe (CPU Vulkan); it is enough for b
 ```
 Variants: the first `*.vcf.gz` with a `.tbi` in `data/` (here the 1KGP CHM13 chr22 sites file from `fetch_data.sh`, override with `--variants FILE`) is read directly through tabix in the same 1 Mb blocks, drawn as 1 px ticks or per-pixel density bars (brighter = AF >= 1%).
 
+Structural variants: `scripts/fetch_sv.sh` (also called from `fetch_data.sh`) downloads the HPRC v1.1 Minigraph-Cactus CHM13 VCF (3.0 GB), keeps sites only, splits multi-allelic records, keeps ins/del/complex with abs(LEN) >= 50 plus INV-flagged records, writes `data/tracks/sv.hprc.vcf.gz` (~91 MB + .tbi) and deletes the raw file. Needs bcftools and ~8 GB free while it runs.
+
 Interaction: click a chromosome in the overview (or drag across it) to open it; mouse wheel zooms, drag pans, click pins the lookup card; the box at the top right of the region view accepts a locus. Above 3 Mb the region view draws densities from the summary; below 3 Mb features load from tabix in 1 Mb tiles (LRU cache, ~100 MB cap); below 20 kb the sequence lane appears, with A/C/G/T letters once a base is at least 8 px wide.
 
 ## Data

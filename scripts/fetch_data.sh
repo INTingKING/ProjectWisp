@@ -2,6 +2,7 @@
 # Download ProjectWisp's genome + annotation data into data/ (not committed).
 # Every file keeps its original licence; UCSC chain files are non-commercial only.
 set -euo pipefail
+S="$(cd "$(dirname "$0")" && pwd)"
 D="${1:-data}"; mkdir -p "$D/tools"; cd "$D"
 T2T=https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies
 UCSC=https://hgdownload.soe.ucsc.edu
@@ -31,4 +32,6 @@ if [ ! -s ccre.hs1.bed ]; then
   tools/liftOver -bedPlus=9 -tab ccre.hg38.min.bed hg38ToHs1.over.chain.gz ccre.hs1.unsorted.bed ccre.unmapped.bed
   sort -k1,1 -k2,2n ccre.hs1.unsorted.bed > ccre.hs1.bed && rm ccre.hs1.unsorted.bed
 fi
+# structural variants (HPRC pangenome, 3 GB download, filtered to ~tens of MB)
+"$S/fetch_sv.sh" "$(pwd)" || echo "SV track skipped"
 echo "done: $(pwd)"
