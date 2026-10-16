@@ -1,4 +1,5 @@
 #include "ui/app.h"
+#include "imgui_internal.h"
 
 #include <algorithm>
 #include <cstring>
@@ -450,7 +451,8 @@ void App::drawSearch(float w) {
     if (ImGui::IsItemActivated()) searchOpen_ = true;
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar(3);
-    ImDrawList* fg = ImGui::GetForegroundDrawList();
+    // root-window draw list (after the frame, so above it) - never the foreground list, which would sit above the intro scrim
+    ImDrawList* fg = ImGui::GetWindowDrawList();
     fg->AddRect(a, ImVec2(a.x + bw, a.y + bh), col(active || searchOpen_ ? kAccent : kBorder), 6, 0, 1.f);
 
     std::string q = searchBuf_;
@@ -2035,8 +2037,12 @@ void App::drawLegend(ImVec2 A, ImVec2 B, FogRenderer& fog) {
     ImGui::PopFont();
 
     using Swatch = std::function<void(ImDrawList*, float, float, float, float)>;  // x0, y0, x1, y1 of the 16x10 box
+    struct Hdr { const char* name; float y; };  // header text top, screen space at scroll 0
+    std::vector<Hdr> hdrs;
+    const float scrollY = ImGui::GetScrollY();
     auto group = [&](const char* name) {
         ImGui::Dummy(ImVec2(1, 4));
+        hdrs.push_back({name, ImGui::GetCursorScreenPos().y + scrollY});
         ImGui::PushFont(fonts().monoSmall);
         ImGui::TextColored(vec(0x6B7280), "%s", name);
         ImGui::PopFont();
@@ -2140,6 +2146,32 @@ void App::drawLegend(ImVec2 A, ImVec2 B, FogRenderer& fog) {
     row("Hover", "Position under the cursor", [](ImDrawList* d, float a, float b, float, float y1) { hoverCursor(d, a + 8, b, y1); });
     row("Pinned", "Position whose card is pinned", [](ImDrawList* d, float a, float b, float, float y1) { pinMarker(d, a + 8, b + 12, y1 - 4); });
 
+    // sticky group header: the group whose header has scrolled past the top stays pinned there (opaque band),
+    // pushed up by the next header as it arrives - same behaviour as the search list's sticky group rows
+    if (scrollY > 0 && !hdrs.empty()) {
+        ImGui::PushFont(fonts().monoSmall);
+        const float hh = ImGui::GetTextLineHeight();
+        ImGui::PopFont();
+        const float top = ImGui::GetWindowPos().y;  // the child's top edge (inside the panel border)
+        const float pad = 6.f, band = hh + 2 * pad;
+        int cur = -1;
+        for (int i = 0; i < int(hdrs.size()); ++i)
+            if (hdrs[i].y - scrollY <= top + pad) cur = i;
+        if (cur >= 0) {
+            float y = top;
+            if (cur + 1 < int(hdrs.size())) y = std::min(y, hdrs[cur + 1].y - scrollY - pad - band);
+            ImGui::PushClipRect(ImVec2(A.x + 1, A.y + 1), ImVec2(B.x - 1, B.y - 1), false);
+            dl->PushClipRect(ImVec2(A.x + 1, A.y + 1), ImVec2(B.x - 7, B.y - 1), false);  // keep the scrollbar visible
+            dl->AddRectFilled(ImVec2(A.x + 1, y), ImVec2(B.x - 1, y + band), col(kPanel), y <= top ? 7.f : 0.f,
+                              ImDrawFlags_RoundCornersTop);
+            dl->AddLine(ImVec2(A.x + 1, y + band), ImVec2(B.x - 1, y + band), col(kBorder));
+            ImGui::PushFont(fonts().monoSmall);
+            dl->AddText(ImVec2(x0, y + pad), col(0x6B7280), hdrs[cur].name);
+            ImGui::PopFont();
+            dl->PopClipRect();
+            ImGui::PopClipRect();
+        }
+    }
     ImGui::EndChild();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
@@ -2168,7 +2200,17 @@ void App::drawIntro(ImVec2 D) {
     };
     const Step& st = steps[introStep_];
     const float fade = opt_.reducedMotion ? 1.f : float(std::clamp((clock_ - introT0_) / 0.15, 0.0, 1.0));
-    ImDrawList* dl = ImGui::GetWindowDrawList();  // root window: under the card window
+    // Scrim + ring live in their own input-less overlay window, above the root window and all of its children
+    // (legend, card, search border); only the intro card window (focused below) sits above it.
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(D);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::Begin("##introScrim", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                              ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::PopStyleVar();
+    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRectFullScreen();
     ImVec2 r0(st.a.x - 4, st.a.y - 4), r1(st.b.x + 4, st.b.y + 4);  // ring sits 4 px outside the target
     const ImU32 scrim = col(kBg, 0.50f);
     dl->AddRectFilled(ImVec2(0, 0), ImVec2(D.x, r0.y), scrim);
@@ -2176,6 +2218,8 @@ void App::drawIntro(ImVec2 D) {
     dl->AddRectFilled(ImVec2(0, r0.y), ImVec2(r0.x, r1.y), scrim);
     dl->AddRectFilled(ImVec2(r1.x, r0.y), ImVec2(D.x, r1.y), scrim);
     dl->AddRect(r0, r1, col(kAccent, fade), 8, 0, 2.f);
+    dl->PopClipRect();
+    ImGui::End();
 
     const float cw = 360, arrow = 12;
     float cx = std::clamp((r0.x + r1.x) * 0.5f - cw * 0.5f, kMargin, D.x - kMargin - cw);
