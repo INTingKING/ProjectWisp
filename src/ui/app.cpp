@@ -63,29 +63,23 @@ unsigned catColor(int c) {
         default: return kColFog;
     }
 }
-const char* catName(int c) {
+unsigned baseCol(char b) {
+    switch (std::toupper((unsigned char)b)) {
+        case 'A': return 0x5CC48A;
+        case 'C': return 0x6AA8FF;
+        case 'G': return 0xF2B544;
+        case 'T': return 0xF07178;
+        default: return 0x8B93A1;
+    }
+}
+const char* pillName(int c) {
     switch (c) {
-        case kExon: return "Known function: exon";
-        case kCcre: return "Known function: regulatory element";
+        case kExon: return "Exon";
+        case kCcre: return "Regulatory";
         case kIntron: return "Intron";
         case kRepeat: return "Repeat";
-        case kNothing: return "Nothing known";
-        default: return "Not in GRCh38";
+        default: return "Nothing known";
     }
-}
-const char* catBlurb(int c) {
-    switch (c) {
-        case kExon: return "Part of a gene that ends up in its RNA (and often in a protein).";
-        case kCcre: return "ENCODE candidate cis-regulatory element: a switch that helps turn genes on or off.";
-        case kIntron: return "Inside a gene but spliced out of the RNA. Mostly unknown function.";
-        case kRepeat: return "A known repeat family (transposon remnant, satellite...). We know what it is, not what it does.";
-        default: return "No gene, regulatory element or repeat annotation reaches here yet.";
-    }
-}
-void sectionLabel(const char* t) {
-    ImGui::PushFont(fonts().uiBold);
-    ImGui::TextColored(vec(kMuted), "%s", t);
-    ImGui::PopFont();
 }
 
 }  // namespace
@@ -224,6 +218,7 @@ void App::frame(FogRenderer& fog) {
     ImGui::PopStyleVar();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     hover_ = {};
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) pinned_ = {};
 
     drawTopBar(dl, D.x);
     float y = drawCoverage(dl, kTopBarH, D.x);
@@ -562,15 +557,6 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     if (span <= 20000) {
         int64_t s = int64_t(viewS_), e = int64_t(std::ceil(viewE_));
         std::string seq = genome_.fetch(ch.name, s, e);
-        auto baseCol = [](char b) -> unsigned {
-            switch (std::toupper((unsigned char)b)) {
-                case 'A': return 0x5CC48A;
-                case 'C': return 0x6AA8FF;
-                case 'G': return 0xF2B544;
-                case 'T': return 0xF07178;
-                default: return 0x8B93A1;
-            }
-        };
         ImGui::PushFont(fonts().mono);
         for (size_t i = 0; i < seq.size(); ++i) {
             double pos = double(s + int64_t(i));
@@ -786,7 +772,13 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         double d = -io.MouseDelta.x * bpPerPx;
         setView(viewCi_, viewS_ + d, viewE_ + d);
     }
-    if (ImGui::IsItemDeactivated() && io.MouseDragMaxDistanceSqr[0] < 9.f && hover_.valid) pinned_ = hover_;
+    if (ImGui::IsItemDeactivated() && io.MouseDragMaxDistanceSqr[0] < 9.f && hover_.valid) {
+        // second click on the pinned spot unpins; elsewhere re-pins
+        bool same = pinned_.valid && !pinned_.overview && pinned_.ci == hover_.ci &&
+                    std::abs(double(pinned_.pos - hover_.pos)) <= std::max(1.0, 3.0 * bpPerPx);
+        if (same) pinned_ = {};
+        else pinned_ = hover_;
+    }
     if (pinned_.valid && !pinned_.overview && pinned_.ci == viewCi_ && pinned_.pos >= viewS_ && pinned_.pos <= viewE_) {
         float x = X(double(pinned_.pos) + 0.5);
         dl->AddLine(ImVec2(x, tracksTop - 8), ImVec2(x, tracksBottom + 4), col(kAccent), 1.5f);
@@ -795,159 +787,267 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
 }
 
 void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
+    // Hover = live preview at 80% opacity; pinned = 100% with accent border + pin icon.
+    const bool live = hover_.valid;
+    const Probe p = live ? hover_ : pinned_;
+    const bool pinnedView = !live && pinned_.valid;
     dl->AddRectFilled(A, B, col(kPanel), 8);
-    dl->AddRect(A, B, col(kBorder), 8);
-    ImGui::SetCursorScreenPos(ImVec2(A.x + 16, A.y + 12));
-    ImGui::BeginChild("##card", ImVec2(B.x - A.x - 32, B.y - A.y - 24), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+    dl->AddRect(A, B, pinnedView ? col(kAccent) : col(kBorder), 8, 0, 1.f);
+    if (pinnedView) {  // pin icon
+        ImVec2 c(B.x - 22, A.y + 18);
+        dl->AddLine(ImVec2(c.x, c.y + 3), ImVec2(c.x, c.y + 10), col(kAccent), 1.5f);
+        dl->AddCircleFilled(c, 4.f, col(kAccent));
+    }
+    const float pad = 16;
+    ImGui::SetCursorScreenPos(ImVec2(A.x + pad, A.y + pad));
+    ImGui::BeginChild("##card", ImVec2(B.x - A.x - 2 * pad, B.y - A.y - 2 * pad), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, live ? 0.8f : 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
     ImGui::PushTextWrapPos(0.f);
-    Probe p = hover_.valid ? hover_ : pinned_;
-    ImGui::PushFont(fonts().title);
-    ImGui::TextUnformatted("Lookup");
-    ImGui::PopFont();
-    ImGui::SameLine();
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
-    ImGui::TextColored(vec(kMuted), "%s", !p.valid ? "hover or click the map" : hover_.valid ? "under cursor" : "pinned");
-    ImGui::Spacing();
+    ImDrawList* cdl = ImGui::GetWindowDrawList();
+    auto U = [](unsigned hex, float a = 1.f) { return ImGui::GetColorU32(vec(hex, a)); };  // honours style alpha
+    const float W = ImGui::GetContentRegionAvail().x;
+    auto separator = [&]() {
+        ImGui::Dummy(ImVec2(0, 6));
+        ImVec2 c = ImGui::GetCursorScreenPos();
+        cdl->AddLine(ImVec2(c.x, c.y), ImVec2(c.x + W, c.y), U(kBorder), 1.f);
+        ImGui::Dummy(ImVec2(0, 7));
+    };
+    auto heading = [&](const char* t) {
+        ImGui::PushFont(fonts().monoSmall);
+        ImGui::TextColored(vec(kMuted), "%s", t);
+        ImGui::PopFont();
+    };
+    auto swatch = [&](unsigned c, bool hatched = false) {
+        ImVec2 cp = ImGui::GetCursorScreenPos();
+        ImVec2 a(cp.x, cp.y + 3), b(cp.x + 12, cp.y + 15);
+        if (hatched) {
+            cdl->AddRectFilled(a, b, U(kNotIn, 0.3f), 2);
+            hatch(cdl, a.x, a.y, b.x, b.y);
+            cdl->AddRect(a, b, U(kNotIn), 2);
+        } else {
+            cdl->AddRectFilled(a, b, U(c), 2);
+        }
+        ImGui::Dummy(ImVec2(12, 18));
+        ImGui::SameLine(0, 8);
+    };
+
     if (!p.valid) {
-        ImGui::TextColored(vec(kMuted), "Point at any chromosome or region to see what is known there.");
+        heading("LOOKUP");
+        ImGui::TextColored(vec(kMuted), "Hover the map for a live preview; click to pin. Esc or a second click unpins.");
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleVar(2);
         ImGui::EndChild();
         return;
     }
     const auto& ch = ov_.chroms()[p.ci];
-    sectionLabel("POSITION");
-    ImGui::PushFont(fonts().mono);
-    ImGui::TextColored(vec(kAccent), "%s:%s", ch.name.c_str(), commas(p.pos + 1).c_str());
-    ImGui::PopFont();
-    ImGui::Spacing();
+    std::string posTxt = ch.name + ":" + commas(p.pos + 1);
 
-    auto chip = [&](unsigned c) {
-        ImVec2 cp = ImGui::GetCursorScreenPos();
-        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(cp.x, cp.y + 3), ImVec2(cp.x + 12, cp.y + 15), col(c), 3);
-        ImGui::Dummy(ImVec2(12, 16));
-        ImGui::SameLine();
-    };
-    auto notInCallout = [&]() {
-        ImGui::Spacing();
-        ImVec2 cp = ImGui::GetCursorScreenPos();
-        float w = ImGui::GetContentRegionAvail().x;
-        ImGui::GetWindowDrawList()->ChannelsSplit(2);
-        ImGui::GetWindowDrawList()->ChannelsSetCurrent(1);
-        ImGui::SetCursorScreenPos(ImVec2(cp.x + 10, cp.y + 8));
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w - 20);
-        ImGui::TextColored(vec(0xD9CCF5), "%s", kNotInMsg);
-        ImGui::PopTextWrapPos();
-        float h = ImGui::GetCursorScreenPos().y - cp.y + 4;
-        ImGui::GetWindowDrawList()->ChannelsSetCurrent(0);
-        ImGui::GetWindowDrawList()->AddRectFilled(cp, ImVec2(cp.x + w, cp.y + h), col(kColNotIn, 0.28f), 6);
-        ImGui::GetWindowDrawList()->AddRect(cp, ImVec2(cp.x + w, cp.y + h), col(kColNotIn), 6);
-        ImGui::GetWindowDrawList()->ChannelsMerge();
-        ImGui::SetCursorScreenPos(ImVec2(cp.x, cp.y + h + 6));
-        ImGui::Dummy(ImVec2(1, 1));
-    };
-
+    // ---------- gather what is known at this base ----------
+    int cat = kNothing;
+    bool loading = false, notIn = false;
+    Visible v;
     if (p.overview) {
-        uint32_t b = uint32_t(p.pos / ov_.binSize());
-        float f[kCatCount];
-        for (int k = 0; k < kCatCount; ++k) f[k] = ov_.frac(p.ci, b, Cat(k));
-        int best = kNothing;
+        uint32_t bin = uint32_t(p.pos / ov_.binSize());
         for (int k = 0; k < kNotIn; ++k)
-            if (f[k] > f[best]) best = k;
-        sectionLabel("MOSTLY");
-        chip(catColor(best));
-        ImGui::PushFont(fonts().uiBold);
-        ImGui::TextUnformatted(catName(best));
-        ImGui::PopFont();
-        ImGui::TextColored(vec(kMuted), "%s", catBlurb(best));
-        ImGui::Spacing();
-        sectionLabel("THIS 100 KB BIN");
-        ImGui::TextColored(vec(kMuted), "%s:%s-%s", ch.name.c_str(), commas(int64_t(b) * ov_.binSize() + 1).c_str(),
-                           commas(std::min<int64_t>(int64_t(b + 1) * ov_.binSize(), int64_t(ch.length))).c_str());
-        const char* names[kCatCount] = {"Exons", "cCREs", "Introns", "Repeats", "Nothing known", "Not in GRCh38"};
-        for (int k = 0; k < kCatCount; ++k) {
-            ImVec2 cp = ImGui::GetCursorScreenPos();
-            float w = ImGui::GetContentRegionAvail().x;
-            auto* wdl = ImGui::GetWindowDrawList();
-            ImGui::Text("%s", names[k]);
-            ImGui::SameLine(w - 52);
-            ImGui::TextColored(vec(kMuted), "%5.1f%%", f[k] * 100);
-            float bx = cp.x + 118, bw = w - 118 - 60;
-            wdl->AddRectFilled(ImVec2(bx, cp.y + 6), ImVec2(bx + bw, cp.y + 12), col(kHover), 3);
-            if (k == kNotIn) {
-                wdl->AddRectFilled(ImVec2(bx, cp.y + 6), ImVec2(bx + bw * f[k], cp.y + 12), col(kColNotIn, 0.4f), 3);
-                hatch(wdl, bx, cp.y + 6, bx + bw * f[k], cp.y + 12);
-            } else {
-                wdl->AddRectFilled(ImVec2(bx, cp.y + 6), ImVec2(bx + bw * f[k], cp.y + 12), col(catColor(k)), 3);
-            }
-        }
-        if (f[kNotIn] > 0.5f) notInCallout();
-        ImGui::Spacing();
-        ImGui::TextColored(vec(kMuted), "Click to open the whole chromosome, drag to zoom.");
+            if (ov_.frac(p.ci, bin, Cat(k)) > ov_.frac(p.ci, bin, Cat(cat))) cat = k;
+        notIn = ov_.frac(p.ci, bin, kNotIn) > 0.5f;
     } else {
-        int64_t tile = p.pos / TrackStore::kTile;
-        Visible v;
-        gather(p.ci, std::max<int64_t>(0, p.pos), p.pos + 1, v);
-        (void)tile;
-        bool loading = v.loading[0] || v.loading[1] || v.loading[2] || v.loading[3];
-        int c = kNothing;
+        gather(p.ci, p.pos, p.pos + 1, v);
+        for (int k = 0; k < kTrackCount; ++k) loading |= v.loading[k];
         bool inExon = false;
         for (auto* x : v.exons) inExon |= (x->s <= p.pos && p.pos < x->e);
-        if (inExon) c = kExon;
-        else if (!v.ccres.empty()) c = kCcre;
-        else if (!v.genes.empty()) c = kIntron;
-        else if (!v.repeats.empty()) c = kRepeat;
-        sectionLabel("CATEGORY");
-        if (loading) {
-            ImGui::TextColored(vec(kMuted), "loading annotations...");
+        cat = inExon ? kExon : !v.ccres.empty() ? kCcre : !v.genes.empty() ? kIntron : !v.repeats.empty() ? kRepeat : kNothing;
+        notIn = !v.notin.empty();
+    }
+
+    // ---------- header: position + category pill ----------
+    ImGui::PushFont(fonts().mono);
+    ImVec2 hp = ImGui::GetCursorScreenPos();
+    ImGui::TextColored(vec(kText), "%s", posTxt.c_str());
+    ImGui::PopFont();
+    {
+        std::string pillS = loading ? "loading" : p.overview ? std::string("Mostly ") + pillName(cat) : std::string(pillName(cat));
+        ImVec2 ts = ImGui::CalcTextSize(pillS.c_str());
+        float pw = ts.x + 20, px = hp.x + W - pw - (pinnedView ? 18 : 0), py = hp.y - 2;
+        unsigned pc = loading ? kHover : catColor(cat);
+        bool darkText = !loading && (cat == kExon || cat == kCcre || cat == kNothing);
+        cdl->AddRectFilled(ImVec2(px, py), ImVec2(px + pw, py + 20), U(pc), 10);
+        cdl->AddText(ImVec2(px + 10, py + (20 - ts.y) * 0.5f), darkText ? U(kBg) : U(kText), pillS.c_str());
+    }
+    if (notIn) {
+        ImGui::Dummy(ImVec2(0, 2));
+        swatch(0, true);
+        ImGui::TextColored(vec(0xC9B6F2), "New in T2T");
+        ImGui::TextColored(vec(kMuted), "%s", kNotInMsg);
+    }
+
+    if (p.overview) {
+        separator();
+        heading("THIS 100 KB BIN");
+        uint32_t bin = uint32_t(p.pos / ov_.binSize());
+        const char* names[kCatCount] = {"Exons", "cCREs", "Introns", "Repeats", "Nothing known", "Not in GRCh38"};
+        for (int k = 0; k < kCatCount; ++k) {
+            float f = ov_.frac(p.ci, bin, Cat(k));
+            ImVec2 cp = ImGui::GetCursorScreenPos();
+            ImGui::TextUnformatted(names[k]);
+            ImGui::SameLine(W - 52);
+            ImGui::TextColored(vec(kMuted), "%5.1f%%", f * 100);
+            float bx = cp.x + 118, bw = W - 118 - 60;
+            cdl->AddRectFilled(ImVec2(bx, cp.y + 6), ImVec2(bx + bw, cp.y + 12), U(kHover), 3);
+            if (k == kNotIn) hatch(cdl, bx, cp.y + 6, bx + bw * f, cp.y + 12);
+            else cdl->AddRectFilled(ImVec2(bx, cp.y + 6), ImVec2(bx + bw * f, cp.y + 12), U(catColor(k)), 3);
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextColored(vec(kMuted), "Click to open the chromosome, drag to zoom.");
+    } else if (!loading) {
+        // ---------- what it is ----------
+        separator();
+        heading("WHAT IT IS");
+        if (!v.genes.empty()) {
+            for (auto* g : v.genes) {
+                // exon/intron number from merged exon blocks of this gene (union over transcripts)
+                Visible gv;
+                gather(p.ci, g->s, g->e, gv);
+                std::vector<std::pair<int64_t, int64_t>> ex;
+                for (auto* x : gv.exons)
+                    if (x->gene == g->name && x->s >= g->s && x->e <= g->e) ex.push_back({x->s, x->e});
+                std::sort(ex.begin(), ex.end());
+                std::vector<std::pair<int64_t, int64_t>> blocks;
+                for (auto& e : ex) {
+                    if (!blocks.empty() && e.first <= blocks.back().second) blocks.back().second = std::max(blocks.back().second, e.second);
+                    else blocks.push_back(e);
+                }
+                if (g->strand == '-') std::reverse(blocks.begin(), blocks.end());
+                std::string where;
+                int nb = int(blocks.size());
+                for (int i = 0; i < nb; ++i) {
+                    if (blocks[i].first <= p.pos && p.pos < blocks[i].second) { where = "exon " + std::to_string(i + 1) + " of " + std::to_string(nb); break; }
+                    if (i + 1 < nb) {
+                        int64_t lo = std::min(blocks[i].second, blocks[i + 1].second), hi = std::max(blocks[i].first, blocks[i + 1].first);
+                        if (g->strand == '-') { lo = blocks[i + 1].second; hi = blocks[i].first; }
+                        else { lo = blocks[i].second; hi = blocks[i + 1].first; }
+                        if (lo <= p.pos && p.pos < hi) { where = "intron " + std::to_string(i + 1) + " of " + std::to_string(nb - 1); break; }
+                    }
+                }
+                if (where.empty()) where = nb ? "outside annotated exons" : "no exons annotated";
+                bool loadingGene = gv.loading[0];
+                ImGui::PushFont(fonts().uiBold);
+                ImGui::TextUnformatted(g->name.c_str());
+                ImGui::PopFont();
+                ImGui::TextColored(vec(kText, 0.9f), "%s", loadingGene ? "..." : where.c_str());
+                ImGui::TextColored(vec(kMuted), "%s strand  |  %s  |  %s", g->strand == '-' ? "minus (-)" : "plus (+)",
+                                   g->biotype.empty() ? "gene" : g->biotype.c_str(), spanStr(double(g->e - g->s)).c_str());
+            }
+            ImGui::PushFont(fonts().monoSmall);
+            ImGui::TextColored(vec(kMuted, 0.8f), "exon numbers count merged exons across all transcripts");
+            ImGui::PopFont();
         } else {
-            chip(catColor(c));
-            ImGui::PushFont(fonts().uiBold);
-            ImGui::TextUnformatted(catName(c));
-            ImGui::PopFont();
-            ImGui::TextColored(vec(kMuted), "%s", catBlurb(c));
+            Visible nv;
+            int64_t r = TrackStore::kTile;
+            gather(p.ci, std::max<int64_t>(0, p.pos - r), p.pos + r, nv);
+            const Gene* best = nullptr;
+            int64_t bd = 0;
+            for (auto* g : nv.genes) {
+                int64_t d = p.pos < g->s ? g->s - p.pos : p.pos >= g->e ? p.pos - g->e + 1 : 0;
+                if (!best || d < bd) { best = g; bd = d; }
+            }
+            if (nv.loading[0]) ImGui::TextColored(vec(kMuted), "looking for the nearest gene...");
+            else if (best) ImGui::TextColored(vec(kText, 0.9f), "No gene here. nearest: %s, %s", best->name.c_str(), spanStr(double(bd)).c_str());
+            else ImGui::TextColored(vec(kMuted), "No gene within 1 Mb");
         }
-        if (!v.notin.empty()) notInCallout();
-        std::string base = genome_.fetch(ch.name, p.pos, p.pos + 1);
-        ImGui::Spacing();
-        sectionLabel("BASE");
-        ImGui::PushFont(fonts().mono);
-        ImGui::Text("%s%s", base.empty() ? "?" : std::string(1, char(std::toupper((unsigned char)base[0]))).c_str(),
-                    !base.empty() && std::islower((unsigned char)base[0]) ? "   (soft-masked: repeat)" : "");
+
+        // ---------- what it might do ----------
+        separator();
+        heading("WHAT IT MIGHT DO");
+        if (v.ccres.empty()) {
+            ImGui::TextColored(vec(kMuted), "No known regulatory element");
+        } else {
+            for (auto* c2 : v.ccres) {
+                ImVec2 cp = ImGui::GetCursorScreenPos();
+                ImGui::Indent(11);
+                ImGui::PushFont(fonts().uiBold);
+                ImGui::TextUnformatted(c2->cls.empty() ? "cCRE" : c2->cls.c_str());
+                ImGui::PopFont();
+                const char* blurb = c2->cls.find("PLS") != std::string::npos ? "promoter-like: where a gene's transcription starts"
+                                  : c2->cls.find("pELS") != std::string::npos ? "proximal enhancer-like: boosts a nearby gene"
+                                  : c2->cls.find("dELS") != std::string::npos ? "distal enhancer-like: can boost genes from afar"
+                                  : c2->cls.find("CTCF") != std::string::npos ? "CTCF-bound: helps fold DNA into domains"
+                                  : "candidate regulatory element";
+                ImGui::TextColored(vec(kMuted), "%s. ENCODE %s, %s", blurb, c2->id.c_str(), spanStr(double(c2->e - c2->s)).c_str());
+                ImGui::Unindent(11);
+                float y1 = ImGui::GetCursorScreenPos().y - 4;
+                cdl->AddRectFilled(ImVec2(cp.x, cp.y + 1), ImVec2(cp.x + 3, y1), U(kColCcre));
+            }
+        }
+
+        // ---------- variation (one row per ALT allele) ----------
+        std::vector<const Variant*> vars;
+        for (auto* x : v.variants)
+            if (x->s <= p.pos && p.pos < x->e) vars.push_back(x);
+        if (!vars.empty()) {
+            separator();
+            heading("VARIATION  (1KGP, 2,504 people)");
+            ImGui::PushFont(fonts().mono);
+            for (auto* x : vars) {
+                bool common = x->af >= 0.01f;
+                float a = common ? 1.f : 0.5f;
+                ImVec2 cp = ImGui::GetCursorScreenPos();
+                float tx = cp.x;
+                auto bases = [&](const std::string& t) {
+                    for (char c : t) {
+                        char b2[2] = {c, 0};
+                        cdl->AddText(ImVec2(tx, cp.y), U(baseCol(c), a), b2);
+                        tx += ImGui::CalcTextSize(b2).x;
+                    }
+                };
+                bases(x->ref);
+                cdl->AddText(ImVec2(tx + 2, cp.y), U(kMuted, a), ">");
+                tx += ImGui::CalcTextSize(">").x + 4;
+                bases(x->alt);
+                char af[32];
+                if (x->af < 0) std::snprintf(af, sizeof af, "AF n/a");
+                else if (x->af < 0.001f) std::snprintf(af, sizeof af, "%.3f%%", x->af * 100);
+                else std::snprintf(af, sizeof af, "%.2f%%", x->af * 100);
+                float barX = cp.x + W - 60;
+                ImVec2 as = ImGui::CalcTextSize(af);
+                cdl->AddText(ImVec2(barX - 10 - as.x, cp.y), U(kText, a), af);
+                float lh = ImGui::GetTextLineHeight();
+                cdl->AddRectFilled(ImVec2(barX, cp.y + lh * 0.5f - 3), ImVec2(barX + 60, cp.y + lh * 0.5f + 3), U(kHover), 3);
+                float fw = x->af > 0 ? std::max(2.f, 60.f * std::min(1.f, x->af)) : 0.f;
+                cdl->AddRectFilled(ImVec2(barX, cp.y + lh * 0.5f - 3), ImVec2(barX + fw, cp.y + lh * 0.5f + 3), U(kAccent, common ? 1.f : 0.4f), 3);
+                ImGui::Dummy(ImVec2(W, lh + 2));
+            }
+            ImGui::PopFont();
+            if (vars.size() > 1 && vars.front()->alleleCount > 1) {
+                ImGui::PushFont(fonts().monoSmall);
+                ImGui::TextColored(vec(kMuted, 0.8f), "multi-allelic site: %d ALT alleles", vars.front()->alleleCount);
+                ImGui::PopFont();
+            }
+        }
+
+        // ---------- unknowns ----------
+        std::vector<std::string> unknowns;
+        for (auto* r : v.repeats) unknowns.push_back("Repeat (" + r->name + ", " + r->cls + "/" + r->family + "), function unknown");
+        if (cat == kIntron) unknowns.push_back("Intronic sequence: spliced out, function mostly unknown");
+        if (cat == kNothing) unknowns.push_back("No gene, regulatory element or repeat annotated here");
+        if (!unknowns.empty()) {
+            separator();
+            heading("UNKNOWNS");
+            for (auto& u : unknowns) {
+                swatch(kColFog);
+                ImGui::TextColored(vec(kText, 0.9f), "%s", u.c_str());
+            }
+        }
+    }
+    if (!pinnedView && pinned_.valid && live) {
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::PushFont(fonts().monoSmall);
+        ImGui::TextColored(vec(kMuted), "preview - pinned card returns when you move away");
         ImGui::PopFont();
-        ImGui::Spacing();
-        sectionLabel("FEATURES HERE");
-        int shown = 0;
-        for (auto* g : v.genes) {
-            bool ex = false;
-            for (auto* x : v.exons) ex |= (x->gene == g->name && x->s <= p.pos && p.pos < x->e);
-            chip(ex ? kColKnown : kColIntron);
-            ImGui::PushFont(fonts().uiBold);
-            ImGui::TextUnformatted(g->name.c_str());
-            ImGui::PopFont();
-            ImGui::TextColored(vec(kMuted), "gene, %s, %c strand, %s; %s here", g->biotype.empty() ? "unknown type" : g->biotype.c_str(),
-                               g->strand, spanStr(double(g->e - g->s)).c_str(), ex ? "exon" : "intron");
-            ++shown;
-        }
-        for (auto* c2 : v.ccres) {
-            chip(kColCcre);
-            ImGui::Text("cCRE %s", c2->id.c_str());
-            ImGui::TextColored(vec(kMuted), "regulatory element, class %s, %s", c2->cls.c_str(), spanStr(double(c2->e - c2->s)).c_str());
-            ++shown;
-        }
-        for (auto* x : v.variants) {
-            chip(kAccent);
-            ImGui::Text("Variant %s > %s", x->ref.c_str(), x->alt.c_str());
-            if (x->af >= 0) ImGui::TextColored(vec(kMuted), "1KGP allele frequency %.4f%% (%s)", x->af * 100.0, x->af >= 0.01f ? "common" : "rare");
-            ++shown;
-        }
-        for (auto* r : v.repeats) {
-            chip(kColRepeat);
-            ImGui::Text("Repeat %s", r->name.c_str());
-            ImGui::TextColored(vec(kMuted), "%s / %s, %s", r->cls.c_str(), r->family.c_str(), spanStr(double(r->e - r->s)).c_str());
-            ++shown;
-        }
-        if (!shown && !loading) ImGui::TextColored(vec(kMuted), "No annotated features at this base.");
     }
     ImGui::PopTextWrapPos();
+    ImGui::PopStyleVar(2);
     ImGui::EndChild();
 }
 
