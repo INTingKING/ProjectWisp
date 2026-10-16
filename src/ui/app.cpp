@@ -283,6 +283,9 @@ float App::drawCoverage(ImDrawList* dl, float y0, float w) {
     legend(kColFog, "Nothing known", segs[3].share, false);
     legend(0, "Not in GRCh38", ov_.share(kNotIn), true);
     ImGui::PopFont();
+    ImGui::PushFont(fonts().monoSmall);
+    dl->AddText(ImVec2(lx + 8, ly + 2), col(kMuted, 0.85f), "overview: brightness shows share per 100 kb");
+    ImGui::PopFont();
 
     if (hovered >= 0) {
         ImGui::BeginTooltip();
@@ -334,26 +337,31 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         ImVec2 ts = ImGui::CalcTextSize(label.c_str());
         dl->AddText(ImVec2(sx0 - 6 - ts.x, y + (stripH - ts.y) * 0.5f), col(ci == viewCi_ ? kAccent : kMuted), label.c_str());
         auto bx = [&](uint32_t b) { return sx0 + float(std::min<double>(double(b) * bin, double(ch.length)) / bpPerPx); };
-        // largest category per bin (exon, cCRE, intron, repeat, nothing); runs of equal colour merged
-        auto largest = [&](uint32_t b) {
-            int best = kExon;
-            for (int k = 1; k < kNotIn; ++k)
-                if (ov_.frac(ci, b, Cat(k)) > ov_.frac(ci, b, Cat(best))) best = k;
-            return best;
+        // bin colour: intron/repeat grey mix by share, blue over it by known share (x4), then fog by nothing share
+        // (the fog layer is drawn by the noise shader so it keeps drifting)
+        auto mixc = [](ImVec4 a, ImVec4 b, float t) {
+            return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, 1.f);
         };
-        uint32_t runB = 0;
-        int runCat = ch.nbins ? largest(0) : kNothing;
         int hatchB = -1;
+        int fogStart = -1;
+        float fogA = 0;
         for (uint32_t b = 0; b <= ch.nbins; ++b) {
             bool last = b == ch.nbins;
-            int c = last ? -1 : largest(b);
-            if (c != runCat) {
-                float x0 = bx(runB), x1 = std::max(bx(b), x0 + 1.f);
-                dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, yb), col(catColor(runCat)));
-                if (runCat == kNothing) fogRects.push_back({x0, y - 1, x1, yb + 1, 0.70f, 24.f, 2.f});
-                runB = b;
-                runCat = c;
+            float qa = 0;
+            if (!last) {
+                float fi = ov_.frac(ci, b, kIntron), fr = ov_.frac(ci, b, kRepeat);
+                float known = ov_.frac(ci, b, kExon) + ov_.frac(ci, b, kCcre);
+                ImVec4 c = fi + fr > 0 ? mixc(vec(kColIntron), vec(kColRepeat), fr / (fi + fr)) : vec(kColIntron);
+                c = mixc(c, vec(kColKnown), std::min(1.f, known * 4.f));
+                float x0 = bx(b), x1 = std::max(bx(b + 1), x0 + 0.5f);
+                dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, yb), ImGui::ColorConvertFloat4ToU32(c));
+                qa = std::round(ov_.frac(ci, b, kNothing) * 0.9f * 20.f) / 20.f;  // quantised so runs merge
             }
+            if (fogStart >= 0 && (last || qa != fogA)) {
+                fogRects.push_back({bx(uint32_t(fogStart)), y, bx(b), yb, fogA, 0.f, 0.f});
+                fogStart = -1;
+            }
+            if (!last && qa > 0 && fogStart < 0) { fogStart = int(b); fogA = qa; }
             bool ni = !last && ov_.frac(ci, b, kNotIn) > 0.5f;
             if (ni && hatchB < 0) hatchB = int(b);
             if (!ni && hatchB >= 0) { hatches.push_back({bx(uint32_t(hatchB)), y, bx(b), yb}); hatchB = -1; }
@@ -386,7 +394,7 @@ void App::drawOverview(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
         }
     }
     ImGui::PopFont();
-    fog.draw(dl, fogRects, 24.f);  // overview: 70% fog, first noise octave at 24 px
+    fog.draw(dl, fogRects, 24.f);  // overview: fog alpha = nothing share * 0.9, first noise octave at 24 px
     for (auto& h : hatches) hatch(dl, h.x0, h.y0, h.x1, h.y1);
 }
 
