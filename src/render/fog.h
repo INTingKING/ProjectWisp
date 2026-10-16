@@ -19,7 +19,7 @@ class FogRenderer {
 public:
     bool init(VkDevice device, VmaAllocator vma, VkRenderPass rp, int frames);
     void shutdown();
-    void beginFrame(float time, ImVec2 drift, ImVec2 viewport);
+    void beginFrame(float time, ImVec2 drift, ImVec2 viewport, float fbScale = 1.f);  // viewport in ImGui units; fbScale = pixels per unit
     void draw(ImDrawList* dl, const std::vector<FogRect>& rects, float octave1 = 64.f);
     void upload(int slot);
 
@@ -37,6 +37,7 @@ private:
     Buf bufs_[2];
     int slot_ = 0;
     std::vector<Vtx> verts_;
+    float fbScale_ = 1.f;
     Push push_{};
 };
 

@@ -10,12 +10,13 @@ Fonts& fonts() {
     return f;
 }
 
-bool apply(const char* assetDir) {
+bool apply(const char* assetDir, float density) {
     ImGuiIO& io = ImGui::GetIO();
     std::string d = std::string(assetDir) + "/fonts/";
     ImFontConfig cfg;
     cfg.OversampleH = 2;
     cfg.OversampleV = 1;
+    cfg.RasterizerDensity = density;  // phone: glyphs rasterised at the framebuffer scale (layout stays in dp)
     Fonts& f = fonts();
     f.ui = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 15.f, &cfg);
     f.uiSmall = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 11.f, &cfg);

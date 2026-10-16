@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -38,6 +39,9 @@ struct AppOptions {
     std::string settingsPath;  // settings.ini; empty = no persistence (shot/script mode unless --settings)
     bool legend = false;       // --legend: open the legend panel (overrides settings)
     bool intro = false;        // --intro: start the first-run intro (overrides settings)
+    bool phone = false;        // --phone (always on Android): portrait touch layout, sizes in dp
+    std::string phoneSheet;    // --sheet peek|half|full: card sheet state at start (phone shots)
+    bool phoneDownloads = false;  // --downloads: open the phone download screen
 };
 
 struct Probe {
@@ -54,6 +58,7 @@ public:
     void frame(FogRenderer& fog);
     bool idle() const;
     bool reducedMotion() const { return opt_.reducedMotion; }
+    void onFinger(int64_t id, float x, float y, int type);  // type 0 down, 1 move, 2 up; x/y in dp
 
 private:
     struct Visible {  // features merged from the tiles covering the view
@@ -98,6 +103,32 @@ private:
     float introCardH_ = 160.f;  // measured card height (placement above a target)
     ImVec2 ovA_{}, ovB_{}, rgA_{}, rgB_{}, searchA_{}, searchB_{};  // intro targets (last frame's layout)
     void setView(int ci, double s, double e);
+    bool initData(std::string& err);  // loads the tracks (split from init so a phone can download them first)
+    // ---- phone layout (src/ui/phone.cpp) ----
+    bool needData_ = false;       // phone first run: core tracks missing -> download screen only
+    bool phoneSearch_ = false;    // full-screen search
+    bool phoneMenu_ = false;      // the top-bar menu
+    bool phoneDownloads_ = false; // download screen opened from the menu
+    int sheetState_ = 0;          // card sheet: 0 peek (96 dp), 1 half, 2 full
+    float chipScroll_ = 0;        // chromosome chip picker scroll (dp)
+    int lastChipCi_ = -1;
+    double pressT0_ = 0;          // region press start (long-press detection)
+    bool longPress_ = false, pinchedThisPress_ = false;
+    std::map<int64_t, ImVec2> fingers_;
+    bool pinching_ = false;
+    float pinchD0_ = 1;
+    double pinchS0_ = 0, pinchE0_ = 0, pinchBp_ = 0;
+    float regionTx0_ = 0;
+    float sheetDragY_ = 0;        // live drag offset of the card / legend sheet
+    long long shownDlBytes(int& phase) const;  // progress to display (virtual clock in script mode)
+    void framePhone(FogRenderer& fog);
+    void drawPhoneTopBar(ImDrawList* dl, float w);
+    void drawChips(ImDrawList* dl, ImVec2 a, ImVec2 b);
+    void drawCardSheet(ImDrawList* dl, ImVec2 display);
+    void drawLegendSheet(ImVec2 display, FogRenderer& fog);
+    void drawPhoneMenu(ImVec2 display);
+    void drawDataScreen(ImVec2 display, bool firstRun);
+    void phonePinch();
     bool parseLocus(const std::string& txt, int& ci, double& s, double& e) const;
 
     AppOptions opt_;

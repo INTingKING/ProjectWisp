@@ -11,6 +11,8 @@
 #include <imgui_impl_vulkan.h>
 
 #include <chrono>
+#include <deque>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -42,9 +44,8 @@ static std::string androidAssets() {
     std::string dst = std::string(SDL_GetAndroidInternalStoragePath()) + "/assets";
     std::error_code ec;
     fs::create_directories(dst + "/fonts", ec);
-    for (const char* f : {"fonts/Inter-Regular.ttf", "fonts/Inter-SemiBold.ttf", "fonts/JetBrainsMono-Regular.ttf", "data_release.conf"}) {
-        std::string out = dst + "/" + f;
-        if (fs::exists(out, ec)) continue;
+    for (const char* f : {"fonts/Inter-Regular.ttf", "fonts/Inter-SemiBold.ttf", "fonts/JetBrainsMono-Regular.ttf", "data_release.conf", "data_packs.tsv"}) {
+        std::string out = dst + "/" + f;  // rewritten every start (small) so an updated APK never runs with stale manifests
         size_t n = 0;
         void* buf = SDL_LoadFile(f, &n);  // relative paths read from the APK's assets/
         if (!buf) continue;
@@ -71,6 +72,8 @@ static std::string androidDataRoot() {  // stub data root; packs are fetched/cop
 //   wait MS                 advance MS of simulated time (60 fps frames)
 //   idle                    wait until tiles/animations/downloads settle
 //   shot NAME               wait until idle, then write NAME.png;  shotnow NAME: write after 2 frames, no idle wait
+//   touch (phone layouts, coordinates in dp):  tap X Y | swipe X0 Y0 X1 Y1 MS | pinch CX CY D0 D1 MS (two fingers,
+//                           horizontal distance D0 -> D1) | hold X Y (finger down; 'up' lifts it)
 //   quit
 struct ScriptCmd { std::string op; std::vector<std::string> a; std::string rest; };
 static const Uint32 kTextEvent = SDL_EVENT_USER + 1;
@@ -183,7 +186,9 @@ int main(int argc, char** argv) {
     int W = 1600, H = 1000;
     float shotTime = 2.0f;
     bool settingsSet = false;
-    float mouseX = -1, mouseY = -1;  // --mouse X,Y: simulated cursor for offscreen shots (hover/tooltips)
+    float mouseX = -1, mouseY = -1;
+    float density = 1.f;  // phone: framebuffer pixels per dp (layout + script coordinates are in dp)
+    bool sizeGiven = false, densityGiven = false;  // --mouse X,Y: simulated cursor for offscreen shots (hover/tooltips)
     for (size_t i = 0; i < args.size(); ++i) {
         std::string a = args[i];
         auto next = [&]() -> std::string { return i + 1 < args.size() ? args[++i] : ""; };
@@ -204,12 +209,16 @@ int main(int argc, char** argv) {
         else if (a == "--settings") { opt.settingsPath = next(); settingsSet = true; }
         else if (a == "--legend") opt.legend = true;
         else if (a == "--intro") opt.intro = true;
+        else if (a == "--sheet") opt.phoneSheet = next();
+        else if (a == "--downloads") opt.phoneDownloads = true;
         else if (a == "--shot") shot = next();
         else if (a == "--script") next();
         else if (a == "--shots-dir") shotsDir = next();
         else if (a == "--mouse") std::sscanf(next().c_str(), "%f,%f", &mouseX, &mouseY);
         else if (a == "--time") shotTime = std::strtof(next().c_str(), nullptr);
-        else if (a == "--size") std::sscanf(next().c_str(), "%dx%d", &W, &H);
+        else if (a == "--size") { std::sscanf(next().c_str(), "%dx%d", &W, &H); sizeGiven = true; }
+        else if (a == "--phone") opt.phone = true;  // portrait phone layout (always on for Android)
+        else if (a == "--density") { density = std::strtof(next().c_str(), nullptr); densityGiven = true; }
         else if (a == "-h" || a == "--help") {
             std::printf("usage: wisp [--data DIR] [--region LOCUS] [--pin LOCUS] [--reduced-motion]\n"
                         "            [--settings FILE] [--legend] [--intro]\n"
@@ -217,6 +226,13 @@ int main(int argc, char** argv) {
             return 0;
         }
     }
+#ifdef __ANDROID__
+    opt.phone = true;
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait");
+#endif
+    if (opt.phone && !sizeGiven) { W = 1080; H = 2340; }  // 360 x 780 dp at density 3 (xxhdpi)
+    if (opt.phone && !densityGiven) density = 3.f;
+    if (density <= 0.f) density = 1.f;
     const bool scripted = !scriptPath.empty();
     const bool offscreen = !shot.empty() || scripted;
     // settings persist in the user config dir; shot/script runs stay hermetic unless --settings is given
@@ -233,6 +249,12 @@ int main(int argc, char** argv) {
         if (!SDL_Init(SDL_INIT_VIDEO)) { std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
         window = SDL_CreateWindow("ProjectWisp", W, H, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
         if (!window) { std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 1; }
+#ifdef __ANDROID__
+        density = std::max(1.f, SDL_GetWindowDisplayScale(window));  // e.g. 2.75 on a 440 dpi phone
+        int pw = W, ph = H;
+        SDL_GetWindowSizeInPixels(window, &pw, &ph);
+        W = pw; H = ph;
+#endif
     }
     VkContext vk;
     std::string err;
@@ -249,7 +271,7 @@ int main(int argc, char** argv) {
 #else
     opt.assetsDir = findAssets(argv[0]);
 #endif
-    theme::apply(opt.assetsDir.c_str());
+    theme::apply(opt.assetsDir.c_str(), density);
     if (window) ImGui_ImplSDL3_InitForVulkan(window);
     ImGui_ImplVulkan_InitInfo ii{};
     ii.ApiVersion = VK_API_VERSION_1_1;
@@ -286,6 +308,24 @@ int main(int argc, char** argv) {
             int shotDelay = 0;
             float mx = mouseX, my = mouseY;
             int shotsWritten = 0;
+            std::deque<std::vector<SDL_Event>> timed;  // touch gestures: one batch of events per frame
+            const float dpW = float(W) / density, dpH = float(H) / density;
+            auto fingerEv = [&](Uint32 type, int id, float x, float y) {
+                SDL_Event e{};
+                e.type = type;
+                e.tfinger.touchID = 1;
+                e.tfinger.fingerID = SDL_FingerID(id);
+                e.tfinger.x = x / dpW;
+                e.tfinger.y = y / dpH;
+                return e;
+            };
+            auto mouseEv = [&](Uint32 type, float x, float y) {
+                SDL_Event e{};
+                e.type = type;
+                if (type == SDL_EVENT_MOUSE_MOTION) { e.motion.x = x; e.motion.y = y; }
+                else { e.button.x = x; e.button.y = y; e.button.button = SDL_BUTTON_LEFT; e.button.down = type == SDL_EVENT_MOUSE_BUTTON_DOWN; }
+                return e;
+            };
             auto pushMouse = [&](Uint32 type, Uint8 btn) {
                 SDL_Event e{};
                 e.type = type;
@@ -294,13 +334,40 @@ int main(int argc, char** argv) {
                 SDL_PushEvent(&e);
             };
             auto stepScript = [&]() {  // run commands until one needs time to pass
-                while (pc < script.size() && waitFrames == 0 && !waitIdle && pendingShot.empty()) {
+                while (pc < script.size() && waitFrames == 0 && !waitIdle && pendingShot.empty() && timed.empty()) {
                     const ScriptCmd& c = script[pc++];
                     auto num = [&](size_t k) { return k < c.a.size() ? std::strtof(c.a[k].c_str(), nullptr) : 0.f; };
                     Uint8 btn = (!c.a.empty() && c.a[0] == "right") ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
                     if (c.op == "move") { mx = num(0); my = num(1); pushMouse(SDL_EVENT_MOUSE_MOTION, 0); waitFrames = 1; }
                     else if (c.op == "down") { pushMouse(SDL_EVENT_MOUSE_BUTTON_DOWN, btn); waitFrames = 1; }
                     else if (c.op == "up") { pushMouse(SDL_EVENT_MOUSE_BUTTON_UP, btn); waitFrames = 1; }
+                    else if (c.op == "tap" || c.op == "hold") {
+                        mx = num(0); my = num(1);
+                        timed.push_back({mouseEv(SDL_EVENT_MOUSE_MOTION, mx, my), mouseEv(SDL_EVENT_MOUSE_BUTTON_DOWN, mx, my)});
+                        if (c.op == "tap") timed.push_back({mouseEv(SDL_EVENT_MOUSE_BUTTON_UP, mx, my)});
+                        waitFrames = 1;
+                    } else if (c.op == "swipe") {
+                        float x0 = num(0), y0 = num(1), x1 = num(2), y1 = num(3);
+                        int n = std::max(2, int(num(4) / (1000.f / 60.f) + 0.5f));
+                        timed.push_back({mouseEv(SDL_EVENT_MOUSE_MOTION, x0, y0), mouseEv(SDL_EVENT_MOUSE_BUTTON_DOWN, x0, y0)});
+                        for (int k = 1; k <= n; ++k) {
+                            float t = float(k) / float(n);
+                            timed.push_back({mouseEv(SDL_EVENT_MOUSE_MOTION, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)});
+                        }
+                        timed.push_back({mouseEv(SDL_EVENT_MOUSE_BUTTON_UP, x1, y1)});
+                        mx = x1; my = y1;
+                        waitFrames = 1;
+                    } else if (c.op == "pinch") {
+                        float cx = num(0), cy = num(1), d0 = num(2), d1 = num(3);
+                        int n = std::max(2, int(num(4) / (1000.f / 60.f) + 0.5f));
+                        timed.push_back({fingerEv(SDL_EVENT_FINGER_DOWN, 1, cx - d0 / 2, cy), fingerEv(SDL_EVENT_FINGER_DOWN, 2, cx + d0 / 2, cy)});
+                        for (int k = 1; k <= n; ++k) {
+                            float d = d0 + (d1 - d0) * float(k) / float(n);
+                            timed.push_back({fingerEv(SDL_EVENT_FINGER_MOTION, 1, cx - d / 2, cy), fingerEv(SDL_EVENT_FINGER_MOTION, 2, cx + d / 2, cy)});
+                        }
+                        timed.push_back({fingerEv(SDL_EVENT_FINGER_UP, 1, cx - d1 / 2, cy), fingerEv(SDL_EVENT_FINGER_UP, 2, cx + d1 / 2, cy)});
+                        waitFrames = 1;
+                    }
                     else if (c.op == "click") {
                         mx = num(0); my = num(1);
                         pushMouse(SDL_EVENT_MOUSE_MOTION, 0);
@@ -344,9 +411,18 @@ int main(int argc, char** argv) {
             if (scripted) io.ConfigInputTextCursorBlink = false;
             while (running) {
                 if (scripted && !settling) {
+                    if (!timed.empty()) {
+                        for (SDL_Event& e : timed.front()) SDL_PushEvent(&e);
+                        timed.pop_front();
+                    }
                     stepScript();
                     SDL_Event e;
-                    while (SDL_PollEvent(&e)) feedImGui(e, io);
+                    while (SDL_PollEvent(&e)) {
+                        feedImGui(e, io);
+                        if (e.type == SDL_EVENT_FINGER_DOWN || e.type == SDL_EVENT_FINGER_MOTION || e.type == SDL_EVENT_FINGER_UP)
+                            app.onFinger(int64_t(e.tfinger.fingerID), e.tfinger.x * dpW, e.tfinger.y * dpH,
+                                         e.type == SDL_EVENT_FINGER_DOWN ? 0 : e.type == SDL_EVENT_FINGER_MOTION ? 1 : 2);
+                    }
                 }
                 if (scripted) {
                     while (settling && app.tilesPending()) SDL_Delay(1);  // let loader threads finish
@@ -355,6 +431,14 @@ int main(int argc, char** argv) {
                 if (window) {
                     SDL_Event e;
                     while (SDL_PollEvent(&e)) {
+#ifdef __ANDROID__
+                        // SDL reports pixels; the UI works in dp
+                        if (e.type == SDL_EVENT_MOUSE_MOTION) { e.motion.x /= density; e.motion.y /= density; }
+                        if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) { e.button.x /= density; e.button.y /= density; }
+#endif
+                        if (e.type == SDL_EVENT_FINGER_DOWN || e.type == SDL_EVENT_FINGER_MOTION || e.type == SDL_EVENT_FINGER_UP)
+                            app.onFinger(int64_t(e.tfinger.fingerID), e.tfinger.x * io.DisplaySize.x, e.tfinger.y * io.DisplaySize.y,
+                                         e.type == SDL_EVENT_FINGER_DOWN ? 0 : e.type == SDL_EVENT_FINGER_MOTION ? 1 : 2);
                         ImGui_ImplSDL3_ProcessEvent(&e);
                         if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
                         if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) vk.requestResize(uint32_t(e.window.data1), uint32_t(e.window.data2));
@@ -364,8 +448,15 @@ int main(int argc, char** argv) {
                 ImGui_ImplVulkan_NewFrame();
                 if (window) {
                     ImGui_ImplSDL3_NewFrame();
+#ifdef __ANDROID__
+                    int pw = 0, ph = 0;
+                    SDL_GetWindowSizeInPixels(window, &pw, &ph);
+                    io.DisplaySize = ImVec2(float(pw) / density, float(ph) / density);
+                    io.DisplayFramebufferScale = ImVec2(density, density);
+#endif
                 } else {
-                    io.DisplaySize = ImVec2(float(W), float(H));
+                    io.DisplaySize = ImVec2(float(W) / density, float(H) / density);
+                    io.DisplayFramebufferScale = ImVec2(density, density);
                     io.DeltaTime = (scripted && settling) ? 1e-6f : 1.f / 60.f;
                     if (!scripted) io.MousePos = ImVec2(mouseX, mouseY);
                 }
@@ -373,7 +464,7 @@ int main(int argc, char** argv) {
                 float secs = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
                 float t = scripted ? shotTime + float(vframe) / 60.f : offscreen ? shotTime : secs;
                 ImVec2 drift = app.reducedMotion() ? ImVec2(0, 0) : ImVec2(6.f, 2.f);  // px/s
-                fog.beginFrame(t, drift, io.DisplaySize);
+                fog.beginFrame(t, drift, io.DisplaySize, io.DisplayFramebufferScale.x);
                 app.frame(fog);
                 ImGui::Render();
                 int slot = 0;

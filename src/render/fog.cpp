@@ -102,8 +102,9 @@ void FogRenderer::shutdown() {
     if (layout_) vkDestroyPipelineLayout(device_, layout_, nullptr);
 }
 
-void FogRenderer::beginFrame(float time, ImVec2 drift, ImVec2 viewport) {
+void FogRenderer::beginFrame(float time, ImVec2 drift, ImVec2 viewport, float fbScale) {
     verts_.clear();
+    fbScale_ = fbScale;
     push_ = {};
     push_.vw = viewport.x;
     push_.vh = viewport.y;
@@ -163,10 +164,11 @@ void FogRenderer::callback(const ImDrawList*, const ImDrawCmd* cmd) {
     const Buf& buf = self->bufs_[self->slot_];
     if (!buf.buf) return;
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, self->pipeline_);
-    VkViewport vp{0, 0, self->push_.vw, self->push_.vh, 0, 1};
+    const float k = self->fbScale_;  // geometry stays in ImGui units (shader divides by push_.vw/vh); viewport + scissor in pixels
+    VkViewport vp{0, 0, self->push_.vw * k, self->push_.vh * k, 0, 1};
     vkCmdSetViewport(cb, 0, 1, &vp);
-    float x0 = std::max(0.f, cmd->ClipRect.x), y0 = std::max(0.f, cmd->ClipRect.y);
-    float x1 = std::min(self->push_.vw, cmd->ClipRect.z), y1 = std::min(self->push_.vh, cmd->ClipRect.w);
+    float x0 = std::max(0.f, cmd->ClipRect.x * k), y0 = std::max(0.f, cmd->ClipRect.y * k);
+    float x1 = std::min(self->push_.vw * k, cmd->ClipRect.z * k), y1 = std::min(self->push_.vh * k, cmd->ClipRect.w * k);
     if (x1 <= x0 || y1 <= y0) return;
     VkRect2D sc{{int32_t(x0), int32_t(y0)}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
     vkCmdSetScissor(cb, 0, 1, &sc);

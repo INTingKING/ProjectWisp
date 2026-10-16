@@ -23,6 +23,7 @@ namespace wisp {
 static const char* kRsidPackSize = "378 MB";
 static const char* kRsidPackCount = "19.4 million";
 static const char* kRsidPackStream = "24.9 GB";
+static const char* kStorageNote = "Stored inside the app; uninstalling deletes it.";
 
 using namespace theme;
 
@@ -149,6 +150,21 @@ void hoverCursor(ImDrawList* dl, float x, float y0, float y1) { dl->AddLine(ImVe
 bool App::init(const AppOptions& opt, std::string& err) {
     opt_ = opt;
     loadPacks();
+    if (opt.phone) {
+        std::error_code ec;
+        if (!std::filesystem::exists(opt.dataDir + "/tracks/overview.wov", ec)) {  // first run on a phone: download screen
+            needData_ = true;
+            loadSettings();
+            introDone_ = true;
+            return true;
+        }
+    }
+    return initData(err);
+}
+
+bool App::initData(std::string& err) {
+    const AppOptions& opt = opt_;
+    needData_ = false;
     svExpanded_ = opt.expandSv;
     cardSvExpanded_ = opt.expandCard;
     std::string tracks = opt.dataDir + "/tracks";
@@ -167,7 +183,10 @@ bool App::init(const AppOptions& opt, std::string& err) {
     }
     if (!store_.open(tracks, vcf, err)) return false;
     std::fprintf(stderr, "variants: %s\n", store_.hasVariants() ? vcf.c_str() : "(none)");
-    if (!genome_.open(opt.dataDir + "/hs1.fa.bgz", err)) return false;
+    {  // genome sequence is optional (a 933 MB download on phones): without it the Sequence lane stays empty
+        std::string gerr;
+        if (!genome_.open(opt.dataDir + "/hs1.fa.bgz", gerr)) std::fprintf(stderr, "genome: %s (sequence lane disabled)\n", gerr.c_str());
+    }
     {
         std::string ge;
         std::string gp = tracks + "/genes.idx.tsv.gz";
@@ -229,7 +248,13 @@ bool App::init(const AppOptions& opt, std::string& err) {
         if (opt.packDownload) startPackDownload();
     }
     loadSettings();
+    if (opt.phone) { introDone_ = true; legendOpen_ = false; }  // the desktop intro/legend layout does not apply
     if (opt.legend) legendOpen_ = true;
+    if (opt.phone) {
+        sheetState_ = opt.phoneSheet == "half" ? 1 : opt.phoneSheet == "full" ? 2 : 0;
+        phoneDownloads_ = opt.phoneDownloads;
+        if (!opt.search.empty()) phoneSearch_ = true;
+    }
     // first run: data is present (init got this far) and no settings flag yet
     if (opt.intro) startIntro();
     else if (!introDone_) { if (packCard_) introPending_ = true; else startIntro(); }
@@ -322,6 +347,7 @@ void App::gather(int ci, int64_t s, int64_t e, Visible& v) {
 }
 
 void App::frame(FogRenderer& fog) {
+    if (opt_.phone) { framePhone(fog); return; }
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 D = io.DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -431,8 +457,9 @@ bool App::runQuery(const std::string& q) {
 }
 
 void App::drawSearch(float w) {
-    const float bw = 320, bh = 32;
-    ImVec2 a((w - bw) * 0.5f, (kTopBarH - bh) * 0.5f);
+    const bool phone = opt_.phone;  // phone: full-screen search, input in the top bar, 48 dp rows
+    const float bw = phone ? w - 56 : 320, bh = phone ? 40 : 32;
+    ImVec2 a = phone ? ImVec2(48, 4) : ImVec2((w - bw) * 0.5f, (kTopBarH - bh) * 0.5f);
     ImGuiIO& io = ImGui::GetIO();
     bool typing = io.WantTextInput;
     if (introStep_ < 0 && ((io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_K)) || (!typing && ImGui::IsKeyPressed(ImGuiKey_Slash)))) searchFocus_ = true;
@@ -466,7 +493,8 @@ void App::drawSearch(float w) {
     struct Row { std::string label, sub, tag; const GeneEntry* g = nullptr; Kind kind = kGeneRow; int n = 0; RsidHit rs{}; };
     std::vector<Row> rows;
     int stickyIdx = -1, stickyEnd = -1;  // opened extra-copy group: main row index, one past its last copy
-    const int cap = 8, maxVisible = 16;
+    const int cap = 8;
+    const int maxVisible = phone ? std::max(4, int((ImGui::GetIO().DisplaySize.y - 64) / 48.f)) : 16;
     int ci; double s, e;
     if (q.find(':') != std::string::npos && parseLocus(q, ci, s, e)) {
         std::string t = ov_.chroms()[ci].name + ":" + commas(int64_t(s) + 1);
@@ -532,7 +560,7 @@ void App::drawSearch(float w) {
         }
     }
     const bool tallHint = rows.size() == 1 && (rows[0].kind == kHintRow || rows[0].kind == kPackRow);
-    const float rh = tallHint ? 48 : 28;  // wrapped two-line message
+    const float rh = phone ? (tallHint ? 72 : 48) : tallHint ? 48 : 28;  // wrapped two-line message; 48 dp touch rows
     int visible = std::min<int>(int(rows.size()), maxVisible);
     if (!rows.empty()) {
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) searchSel_ = std::min(int(rows.size()) - 1, searchSel_ + 1);
@@ -541,6 +569,7 @@ void App::drawSearch(float w) {
     }
     float nr = float(std::max(1, visible));
     ImVec2 d0(a.x, a.y + bh + 4), d1(a.x + bw, a.y + bh + 4 + nr * rh + 8);
+    if (phone) { d0 = ImVec2(0, 52); d1 = ImVec2(w, 52 + nr * rh + 8); }
     dropA_ = d0; dropB_ = d1;
     int maxScroll = std::max(0, int(rows.size()) - visible);
     if (ImGui::IsMouseHoveringRect(d0, d1, false) && io.MouseWheel != 0) searchScroll_ -= int(io.MouseWheel * 3);
@@ -604,7 +633,7 @@ void App::drawSearch(float w) {
         float px = r1.x - 4;
         auto pill = [&](const std::string& t, bool extra) {
             float tw = fonts().monoSmall->CalcTextSizeA(11, FLT_MAX, 0, t.c_str()).x;
-            ImVec2 p0(px - tw - 10, r0.y + 6), p1(px, r1.y - 6);
+            ImVec2 p0(px - tw - 10, r0.y + (rh - 16) * 0.5f), p1(px, r0.y + (rh - 16) * 0.5f + 16);  // 16 tall, centred in the row
             if (extra) {
                 fg->AddRectFilled(p0, p1, col(0x8A8F99, 0.18f), 8);
                 fg->AddRect(p0, p1, col(0x8A8F99), 8);
@@ -664,9 +693,10 @@ void App::drawSearch(float w) {
             searchOpen_ = false;
             ImGui::SetWindowFocus(nullptr);
         }
-    } else if (!active && ImGui::IsMouseClicked(0) && !ImGui::IsMouseHoveringRect(d0, d1, false)) {
+    } else if (!phone && !active && ImGui::IsMouseClicked(0) && !ImGui::IsMouseHoveringRect(d0, d1, false)) {
         searchOpen_ = false;
     }
+    if (phone && !searchOpen_) phoneSearch_ = false;  // a result was chosen: back to the map
     if (!searchOpen_) dropA_ = dropB_ = ImVec2(-1, -1);
 }
 
@@ -788,8 +818,9 @@ void App::drawPackCard(ImVec2 D) {
     // first-run style download card, showing only the optional rsID pack
     ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), D, col(0x0F1115, 0.60f));  // 60% scrim over the root window
     searchOpen_ = false;
-    const float w = 480;
-    ImGui::SetNextWindowPos(ImVec2((D.x - w) * 0.5f, D.y * 0.28f));
+    const bool phone = opt_.phone;
+    const float w = phone ? D.x - 24 : 480, bh = phone ? 44 : 30;  // 44 dp touch targets on phones
+    ImGui::SetNextWindowPos(phone ? ImVec2(12, D.y * 0.16f) : ImVec2((D.x - w) * 0.5f, D.y * 0.28f));
     ImGui::SetNextWindowSize(ImVec2(w, 0));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, vec(kPanel));
     ImGui::PushStyleColor(ImGuiCol_Border, vec(kBorder));
@@ -810,6 +841,11 @@ void App::drawPackCard(ImVec2 D) {
     ImGui::PushFont(fonts().mono);
     ImGui::TextColored(vec(kText), "%s download", kRsidPackSize);
     ImGui::PopFont();
+    if (phone) {  // app-specific storage: the size warning follows the total size
+        ImGui::PushFont(fonts().ui13);
+        ImGui::TextColored(vec(0x8A8F99), "%s", kStorageNote);
+        ImGui::PopFont();
+    }
     ImGui::PushTextWrapPos(w - 16);
     ImGui::TextColored(vec(kMuted), "%s rsIDs from dbSNP 155 on T2T-CHM13 (UCSC), common variants only (minor allele >= 1%% in any "
                                     "1000 Genomes population).",
@@ -830,24 +866,24 @@ void App::drawPackCard(ImVec2 D) {
         char over[96];
         if (ph == 0) std::snprintf(over, sizeof over, "Downloading %.0f / %.0f MB", b / 1048576.0, t / 1048576.0);
         else std::snprintf(over, sizeof over, "Verifying checksum...");
-        ImGui::ProgressBar(frac, ImVec2(w - 32, 20), over);
+        ImGui::ProgressBar(frac, ImVec2(w - 32, phone ? 28 : 20), over);
     } else {
         if (st == 3) { std::lock_guard<std::mutex> l(dlMu_); ImGui::TextColored(vec(0xE8A13A), "Failed: %s", dlMsg_.c_str()); }
         ImGui::PushStyleColor(ImGuiCol_Button, vec(kAccent));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, vec(0x9AD3FF));
         ImGui::PushStyleColor(ImGuiCol_Text, vec(kBg));
-        if (ImGui::Button(st == 3 ? "Retry download" : "Download", ImVec2(140, 30))) startPackDownload();
+        if (ImGui::Button(st == 3 ? "Retry download" : "Download", ImVec2(140, bh))) startPackDownload();
         ImGui::PopStyleColor(3);
         ImGui::SameLine();
-        if (ImGui::Button("Close", ImVec2(90, 30))) packCard_ = false;  // secondary, right of Download
-        ImGui::SameLine();
+        if (ImGui::Button("Close", ImVec2(90, bh))) packCard_ = false;  // secondary, right of Download
+        if (!phone) ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(vec(kMuted), "prebuilt, checksum-verified");
     }
     ImGui::Spacing();
-    ImGui::SetNextItemOpen(manualOpen_, ImGuiCond_Always);
-    manualOpen_ = ImGui::TreeNodeEx("Manual install", ImGuiTreeNodeFlags_NoTreePushOnOpen);
-    if (manualOpen_) {
+    if (!phone) ImGui::SetNextItemOpen(manualOpen_, ImGuiCond_Always);
+    if (!phone) manualOpen_ = ImGui::TreeNodeEx("Manual install", ImGuiTreeNodeFlags_NoTreePushOnOpen);  // shell build: desktop only
+    if (!phone && manualOpen_) {
         ImGui::PushTextWrapPos(w - 16);
         ImGui::TextColored(vec(kMuted), "Build it yourself instead: streams the %s dbSNP file from UCSC (about 10 minutes, needs bcftools).", kRsidPackStream);
         ImGui::PopTextWrapPos();
@@ -858,7 +894,7 @@ void App::drawPackCard(ImVec2 D) {
     }
     ImGui::Spacing();
     bool showsDl = !rsid_.present() && st != 1;
-    if (!showsDl) { if (ImGui::Button(st == 1 ? "Hide" : "Close", ImVec2(90, 30))) packCard_ = false; }
+    if (!showsDl) { if (ImGui::Button(st == 1 ? "Hide" : "Close", ImVec2(90, bh))) packCard_ = false; }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) packCard_ = false;
     ImGui::End();
     ImGui::PopStyleVar(3);
@@ -1113,14 +1149,26 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     dl->AddRect(A, B, col(kBorder), 8);
     ImGuiIO& io = ImGui::GetIO();
     const auto& ch = ov_.chroms()[viewCi_];
-    const float gutter = 84;
-    const float tx0 = A.x + 12 + gutter, tx1 = B.x - 14, W = tx1 - tx0;
+    const bool phone = opt_.phone;
+    const float ts = phone ? 1.5f : 1.f;  // phone: track heights x1.5, labels in a 56 dp gutter, hints hidden
+    const float gutter = phone ? 56 - 12 + 4 : 84;
+    const float tx0 = A.x + 12 + gutter, tx1 = B.x - (phone ? 8 : 14), W = tx1 - tx0;
     regionWidthPx_ = W;
+    regionTx0_ = tx0;
     const double span = viewE_ - viewS_, bpPerPx = span / W, pxPerBp = W / span;
     auto X = [&](double pos) { return float(tx0 + (pos - viewS_) * pxPerBp); };
 
     // header: locus + go-to box
     std::string locus = ch.name + ":" + commas(int64_t(viewS_) + 1) + "-" + commas(int64_t(viewE_));
+    if (phone) {  // compact header: locus + span only
+        ImGui::PushFont(fonts().mono);
+        dl->AddText(ImVec2(A.x + 12, A.y + 10), col(kAccent), locus.c_str());
+        float lw = ImGui::CalcTextSize(locus.c_str()).x;
+        ImGui::PopFont();
+        ImGui::PushFont(fonts().ui13);
+        dl->AddText(ImVec2(A.x + 12 + lw + 8, A.y + 10), col(kMuted), spanStr(span).c_str());
+        ImGui::PopFont();
+    } else {
     ImGui::PushFont(fonts().uiBold);
     dl->AddText(ImVec2(A.x + 12, A.y + 10), col(kText), "Region");
     ImGui::PopFont();
@@ -1129,22 +1177,24 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     float lw = ImGui::CalcTextSize(locus.c_str()).x;
     ImGui::PopFont();
     dl->AddText(ImVec2(A.x + 74 + lw + 12, A.y + 10), col(kMuted), (spanStr(span) + "   wheel zoom | drag pan | click pin").c_str());
+    }
 
     // track heights (genes 48, cCRE 24, repeats 24); each track has a 14px header line for hints
-    const float varH = 20;
-    const float hdrH = 14, geneTrackH = 48, ccreH = 24, repH = 24, niH = 10;
+    const float varH = 20 * ts;
+    const float hdrH = 14, geneTrackH = 48 * ts, ccreH = 24 * ts, repH = 24 * ts, niH = 10 * ts;
     const float stackH = 26 + (10 + 8) + (hdrH + 20 + 6) + (hdrH + geneTrackH + 6) + (hdrH + ccreH + 6) + (hdrH + repH + 6) + niH + (6 + hdrH + varH) + (6 + hdrH + (svExpanded_ ? std::max(20.f, svRowsLast_ * 7.f + 5.f) : 20.f));
     const float availBot = B.y - 30;
     (void)availBot; (void)stackH;
-    float y = A.y + 28 + 16;  // top-aligned, 16px under the Region header
+    float y = A.y + (phone ? 24 : 28) + 16;  // top-aligned, 16px under the Region header
     auto hint = [&](float hy, const char* t) {
+        if (phone) return;  // hints hidden on phones
         ImGui::PushFont(fonts().uiSmall);
         dl->AddText(ImVec2(tx0, hy + 1), col(0x6B7280), t);
         ImGui::PopFont();
     };
     // ruler
     {
-        double raw = span / 8.0, p10 = std::pow(10.0, std::floor(std::log10(raw)));
+        double raw = span / (phone ? std::max(2.0, double(W) / 100.0) : 8.0), p10 = std::pow(10.0, std::floor(std::log10(raw)));
         double step = raw / p10 < 2 ? 2 * p10 : raw / p10 < 5 ? 5 * p10 : 10 * p10;
         step = std::max(1.0, step);
         dl->AddLine(ImVec2(tx0, y + 18), ImVec2(tx1, y + 18), col(kBorder));
@@ -1161,8 +1211,15 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     }
     const float tracksTop = y;
     auto laneLabel = [&](float ly, float lh, const char* t) {
-        ImVec2 ts = ImGui::CalcTextSize(t);
-        dl->AddText(ImVec2(A.x + 12, ly + (lh - ts.y) * 0.5f), col(kMuted), t);
+        if (phone) {  // 11 dp labels in the 56 dp gutter; "Not in GRCh38" wraps
+            ImGui::PushFont(fonts().uiSmall);
+            ImVec2 ls = ImGui::CalcTextSize(t, nullptr, false, gutter);
+            dl->AddText(nullptr, 0.f, ImVec2(A.x + 8, ly + (lh - ls.y) * 0.5f), col(kMuted), t, nullptr, gutter);
+            ImGui::PopFont();
+            return;
+        }
+        ImVec2 ls = ImGui::CalcTextSize(t);
+        dl->AddText(ImVec2(A.x + 12, ly + (lh - ls.y) * 0.5f), col(kMuted), t);
     };
     std::vector<FogRect> fogRects;
     struct Hatch { float x0, y0, x1, y1; };
@@ -1173,10 +1230,10 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     std::vector<uint8_t> catKnown(cols, 1);     // 0 while that pixel's data is still loading
 
     // lanes
-    const float catY = y, catH = 10;
+    const float catY = y, catH = 10 * ts;
     y += catH + 8;
     const float seqHdrY = y;
-    const float seqY = y + hdrH, seqH = 20;
+    const float seqY = y + hdrH, seqH = 20 * ts;
     y = seqY + seqH + 6;
     const float geneHdrY = y;
     const float geneY = y + hdrH;
@@ -1416,15 +1473,20 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     // structural variants (HPRC pangenome): ins = 2 px tick + caret, del/inv/complex = bars.
     // Collapsed: largest first so smaller events sit on top (covered ones get a 1 px outline).
     // Expanded: greedy sub-rows, 6 px + 1 px gap, max 8 rows, '+N more' for overflow.
-    const float svH = svExpanded_ ? std::max(20.f, svRowsLast_ * 7.f - 1.f + 6.f) : 20.f;
+    const float svH = svExpanded_ ? std::max(20.f * ts, svRowsLast_ * 7.f - 1.f + 6.f) : 20.f * ts;
     const float svHdrY = varY + varH + 6, svY = svHdrY + hdrH;
     bool uiClaim = false;  // a UI control under the mouse consumes it: no map hover, pan or pin
     auto svT0 = std::chrono::steady_clock::now();
-    laneLabel(svY, std::min(svH, 20.f), "SVs");
-    {  // expand / collapse chevron at the right of the header line
+    laneLabel(svY, std::min(svH, 20.f * ts), "SVs");
+    {  // expand / collapse chevron at the right of the header line (44 dp touch target on phones)
         ImVec2 c(tx1 - 6, svHdrY + 7);
+        if (phone) {
+            ImGui::SetCursorScreenPos(ImVec2(c.x - 30, c.y - 22));
+            if (ImGui::InvisibleButton("##svexpand", ImVec2(44, 44))) svExpanded_ = !svExpanded_;
+        } else {
         ImGui::SetCursorScreenPos(ImVec2(tx1 - 16, svHdrY - 1));
         if (ImGui::InvisibleButton("##svexpand", ImVec2(16, 15))) svExpanded_ = !svExpanded_;
+        }
         uiClaim = ImGui::IsItemHovered() || ImGui::IsItemActive() || ImGui::IsItemDeactivated();
         unsigned cc = ImGui::IsItemHovered() ? kAccent : kMuted;
         if (svExpanded_) dl->AddTriangleFilled(ImVec2(c.x - 4, c.y + 2), ImVec2(c.x + 4, c.y + 2), ImVec2(c.x, c.y - 3), col(cc));
@@ -1563,8 +1625,40 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     char status[160];
     std::snprintf(status, sizeof status, "region cache %.1f / %zu MB   loading %zu tile(s)", store_.bytes() / 1048576.0,
                   TrackStore::kBudget >> 20, store_.pending());
-    dl->AddText(ImVec2(A.x + 12, B.y - 24), col(kMuted, 0.8f), status);
+    if (!phone) dl->AddText(ImVec2(A.x + 12, B.y - 24), col(kMuted, 0.8f), status);
 
+    if (phone) {
+        // touch: one-finger pan, tap to pin, long-press (450 ms, < 10 dp of movement) = hover preview; pinch in framePhone
+        ImGui::SetCursorScreenPos(ImVec2(A.x, tracksTop - 26));
+        ImGui::InvisibleButton("##region", ImVec2(B.x - A.x, std::max(10.f, B.y - tracksTop + 26)));
+        double pos = std::clamp(viewS_ + (io.MousePos.x - tx0) * bpPerPx, 0.0, double(ch.length) - 1);
+        Probe here{true, viewCi_, int64_t(pos), false};
+        if (!uiClaim && ImGui::IsItemActivated()) { pressT0_ = clock_; longPress_ = false; pinchedThisPress_ = pinching_; }
+        if (pinching_) pinchedThisPress_ = true;
+        const float moved = io.MouseDragMaxDistanceSqr[0];
+        if (!uiClaim && ImGui::IsItemActive() && !pinchedThisPress_) {
+            if (!longPress_ && moved < 100.f && clock_ - pressT0_ >= 0.45) longPress_ = true;
+            if (longPress_) {
+                hover_ = here;
+                hoverCursor(dl, io.MousePos.x, tracksTop - 6, tracksBottom + 4);
+            } else if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 10.f)) {
+                double d = -io.MouseDelta.x * bpPerPx;
+                setView(viewCi_, viewS_ + d, viewE_ + d);
+            }
+        }
+        if (!uiClaim && ImGui::IsItemDeactivated()) {
+            if (!longPress_ && !pinchedThisPress_ && moved < 100.f) {
+                bool same = pinned_.valid && !pinned_.overview && pinned_.ci == here.ci &&
+                            std::abs(double(pinned_.pos - here.pos)) <= std::max(1.0, 8.0 * bpPerPx);
+                if (same) pinned_ = {};
+                else pinned_ = here;
+            }
+            longPress_ = false;
+        }
+        if (pinned_.valid && !pinned_.overview && pinned_.ci == viewCi_ && pinned_.pos >= viewS_ && pinned_.pos <= viewE_)
+            pinMarker(dl, X(double(pinned_.pos) + 0.5), tracksTop, tracksBottom);
+        return;
+    }
     // interaction over the lanes
     ImGui::SetCursorScreenPos(ImVec2(tx0, tracksTop - 26));
     ImGui::InvisibleButton("##region", ImVec2(W, std::max(10.f, tracksBottom - tracksTop + 26)));
@@ -1601,8 +1695,10 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
     const bool live = hover_.valid;
     const Probe p = live ? hover_ : pinned_;
     const bool pinnedView = !live && pinned_.valid;
-    dl->AddRectFilled(A, B, col(kPanel), 8);
-    dl->AddRect(A, B, pinnedView ? col(kAccent) : col(kBorder), 8, 0, 1.f);
+    if (!opt_.phone) {  // phone: the bottom sheet draws the panel
+        dl->AddRectFilled(A, B, col(kPanel), 8);
+        dl->AddRect(A, B, pinnedView ? col(kAccent) : col(kBorder), 8, 0, 1.f);
+    }
     if (pinnedView) {  // pin icon
         ImVec2 c(B.x - 22, A.y + 18);
         dl->AddLine(ImVec2(c.x, c.y + 3), ImVec2(c.x, c.y + 10), col(kAccent), 1.5f);
@@ -1611,6 +1707,8 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
     const float pad = 16;
     ImGui::SetCursorScreenPos(ImVec2(A.x + pad, A.y + pad));
     ImGui::BeginChild("##card", ImVec2(B.x - A.x - 2 * pad, B.y - A.y - 2 * pad), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+    if (opt_.phone && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 6.f))
+        ImGui::SetScrollY(ImGui::GetScrollY() - ImGui::GetIO().MouseDelta.y);  // touch scroll
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, live ? 0.8f : 1.f);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
     ImGui::PushTextWrapPos(0.f);
@@ -1755,8 +1853,10 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
                 std::snprintf(t, sizeof t, "%d alleles here, together on %s%d of %d copies", g->count, g->atLeast ? "at least " : "", g->ac, g->an);
                 float wrapW = ImGui::GetContentRegionAvail().x - 18;
                 ImVec2 ts = ImGui::CalcTextSize(t, nullptr, false, wrapW);
-                if (ImGui::InvisibleButton("##grp", ImVec2(ImGui::GetContentRegionAvail().x, ts.y))) cardSvExpanded_ = !cardSvExpanded_;
+                const float rowH = opt_.phone ? std::max(ts.y, 44.f) : ts.y;  // 44 dp touch target on phones
+                if (ImGui::InvisibleButton("##grp", ImVec2(ImGui::GetContentRegionAvail().x, rowH))) cardSvExpanded_ = !cardSvExpanded_;
                 bool hov = ImGui::IsItemHovered();
+                cp.y += (rowH - ts.y) * 0.5f;
                 cdl->AddText(nullptr, 0.f, cp, U(kText, 0.95f), t, nullptr, wrapW);
                 ImVec2 c(cp.x + wrapW + 10, cp.y + 8);
                 unsigned cc = hov ? kAccent : kMuted;
@@ -2057,8 +2157,9 @@ void App::drawLegend(ImVec2 A, ImVec2 B, FogRenderer& fog) {
     rdl->AddText(ImVec2(A.x + 12, A.y + 12), col(kText), "Legend");
     ImGui::PopFont();
     ImGui::PushFont(fonts().monoSmall);
-    ImVec2 hs = ImGui::CalcTextSize("L to close");
-    rdl->AddText(ImVec2(B.x - 12 - hs.x, A.y + 12 + (th - hs.y) * 0.5f), col(kMuted), "L to close");
+    const char* closeHint = opt_.phone ? "swipe down to close" : "L to close";
+    ImVec2 hs = ImGui::CalcTextSize(closeHint);
+    rdl->AddText(ImVec2(B.x - 12 - hs.x, A.y + 12 + (th - hs.y) * 0.5f), col(kMuted), closeHint);
     ImGui::PopFont();
     const float headH = 12 + th + 8;
     rdl->AddLine(ImVec2(A.x + 1, A.y + headH), ImVec2(B.x - 1, A.y + headH), col(kBorder));
@@ -2067,6 +2168,8 @@ void App::drawLegend(ImVec2 A, ImVec2 B, FogRenderer& fog) {
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 6);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, vec(kPanel, 0.f));
     ImGui::BeginChild("##legend", ImVec2(B.x - A.x, B.y - A.y - headH - 2), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoBackground);
+    if (opt_.phone && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 6.f))
+        ImGui::SetScrollY(ImGui::GetScrollY() - ImGui::GetIO().MouseDelta.y);  // touch scroll
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float x0 = ImGui::GetCursorScreenPos().x;
 
@@ -2328,6 +2431,416 @@ void App::drawIntro(ImVec2 D) {
         if (last) endIntro();
         else { ++introStep_; introT0_ = clock_; }  // reducedMotion: fade is 1 immediately (no fade between steps)
     }
+}
+
+
+// =====================================================================================================================
+// Phone layout (portrait, sizes in dp; Android always, desktop with --phone). Designer spec:
+//   48 dp top bar (logo, search icon -> full-screen search, menu) | 64 dp chromosome chip picker with mini bars |
+//   region view fills the rest (56 dp label gutter, tracks x1.5, hints hidden; pinch zoom, one-finger pan, tap pins,
+//   long-press previews) | card as a bottom sheet (96 dp peek -> half -> full, swipe down unpins) | legend sheet from
+//   the menu | 44 dp minimum touch targets.
+// =====================================================================================================================
+namespace {
+constexpr float kPhoneTopH = 48.f, kPhoneChipH = 64.f, kSheetPeek = 96.f, kSheetHandle = 44.f;
+const char* chipName(const std::string& n) { return n.rfind("chr", 0) == 0 ? n.c_str() + 3 : n.c_str(); }
+struct PackInfo { const char* id; const char* name; const char* desc; };
+const PackInfo kPackInfo[] = {
+    {"core", "Core tracks", "Genes, ENCODE regulatory elements, repeats, regions new in T2T and the genome overview. Required."},
+    {"sv", "Structural variants", "HPRC pangenome SVs (50 bp and up), shown below 3 Mb."},
+    {"methyl", "CpG methylation", "CHM13 nanopore methylation strip under the regulatory track."},
+    {"genome", "Genome sequence", "hs1 bases, shown when zoomed below 20 kb."},
+    {"rsid", "Common variants (rsID search)", "19.4 million dbSNP 155 rsIDs for the search box."},
+};
+std::string mbStr(long long b) {
+    char t[32];
+    if (b >= 1024LL * 1048576) std::snprintf(t, sizeof t, "%.1f GB", b / 1073741824.0);
+    else std::snprintf(t, sizeof t, "%.0f MB", std::max(1.0, b / 1048576.0));
+    return t;
+}
+// handle bar + 44 dp drag zone at the top of a sheet; returns the drag delta on release (0 while dragging), tap = 0.001
+float sheetHandle(const char* id, ImDrawList* dl, float top, float w, float& live) {
+    dl->AddRectFilled(ImVec2(w * 0.5f - 18, top + 8), ImVec2(w * 0.5f + 18, top + 12), col(kBorder), 2);
+    ImGui::SetCursorScreenPos(ImVec2(0, top));
+    ImGui::InvisibleButton(id, ImVec2(w, kSheetHandle));
+    if (ImGui::IsItemActive()) live = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.f).y;
+    if (ImGui::IsItemDeactivated()) {
+        float d = live;
+        live = 0;
+        return std::fabs(d) < 10.f ? 0.001f : d;
+    }
+    return 0.f;
+}
+}  // namespace
+
+void App::onFinger(int64_t id, float x, float y, int type) {
+    if (type == 2) fingers_.erase(id);
+    else fingers_[id] = ImVec2(x, y);
+}
+
+long long App::shownDlBytes(int& phase) const {
+    long long b = dlDoneBytes_ + dlCurBytes_, t = dlTotal_;
+    phase = dlPhase_;
+    if (virtualClock_ >= 0) {  // script mode: progress from the virtual clock (20 MB/s), not wall time
+        b = std::min<long long>(t, (long long)((clock_ - dlT0_) * 20000.0 * 1024.0));
+        phase = b >= t ? 1 : 0;
+    }
+    return b;
+}
+
+void App::phonePinch() {
+    if (fingers_.size() < 2) { pinching_ = false; return; }
+    auto it = fingers_.begin();
+    ImVec2 p1 = it->second, p2 = (++it)->second;
+    float d = std::max(1.f, std::hypot(p2.x - p1.x, p2.y - p1.y));
+    float cx = (p1.x + p2.x) * 0.5f;
+    double span = viewE_ - viewS_;
+    if (!pinching_) {
+        pinching_ = true;
+        pinchD0_ = d;
+        pinchS0_ = viewS_;
+        pinchE0_ = viewE_;
+        pinchBp_ = viewS_ + (cx - regionTx0_) * span / std::max(1.f, regionWidthPx_);
+        animating_ = false;
+    }
+    double ns = (pinchE0_ - pinchS0_) * double(pinchD0_ / d);
+    double s = pinchBp_ - (cx - regionTx0_) * ns / std::max(1.f, regionWidthPx_);  // the base under the fingers stays put
+    setView(viewCi_, s, s + ns);
+}
+
+void App::drawPhoneTopBar(ImDrawList* dl, float w) {
+    dl->AddRectFilled(ImVec2(0, 0), ImVec2(w, kPhoneTopH), col(kPanel));
+    dl->AddLine(ImVec2(0, kPhoneTopH - 0.5f), ImVec2(w, kPhoneTopH - 0.5f), col(kBorder));
+    ImVec2 c(16 + 8, kPhoneTopH * 0.5f);
+    dl->AddCircleFilled(c, 8, col(kAccent, 0.18f));
+    dl->AddCircleFilled(c, 4, col(kAccent));
+    ImGui::PushFont(fonts().title);
+    float th = ImGui::GetTextLineHeight();
+    dl->AddText(ImVec2(40, (kPhoneTopH - th) * 0.5f), col(kText), "ProjectWisp");
+    ImGui::PopFont();
+    auto iconBtn = [&](const char* id, float x, bool on) {
+        ImGui::SetCursorScreenPos(ImVec2(x, 2));
+        bool hit = ImGui::InvisibleButton(id, ImVec2(44, 44));
+        if (ImGui::IsItemActive() || on) dl->AddRectFilled(ImVec2(x + 2, 4), ImVec2(x + 42, 44), col(kHover), 8);
+        return hit;
+    };
+    float sx = w - 96;
+    if (iconBtn("##psearch", sx, phoneSearch_)) { phoneSearch_ = true; searchFocus_ = true; phoneMenu_ = false; }
+    ImVec2 sc(sx + 20, 22);  // magnifier
+    dl->AddCircle(sc, 7, col(kText), 0, 1.8f);
+    dl->AddLine(ImVec2(sc.x + 5, sc.y + 5), ImVec2(sc.x + 11, sc.y + 11), col(kText), 2.f);
+    float mx = w - 48;
+    if (iconBtn("##pmenu", mx, phoneMenu_)) phoneMenu_ = !phoneMenu_;
+    for (int i = -1; i <= 1; ++i) dl->AddCircleFilled(ImVec2(mx + 22 + i * 6.f, 24), 2.f, col(kText));
+}
+
+void App::drawChips(ImDrawList* dl, ImVec2 A, ImVec2 B) {
+    ImGuiIO& io = ImGui::GetIO();
+    const float chipW = 48, gap = 6, x0 = 8;
+    const int n = int(order_.size());
+    const float total = x0 * 2 + n * chipW + (n - 1) * gap, maxScroll = std::max(0.f, total - (B.x - A.x));
+    if (lastChipCi_ != viewCi_) {  // keep the selected chip in view
+        for (int r = 0; r < n; ++r)
+            if (order_[r] == viewCi_) {
+                float cx = x0 + r * (chipW + gap);
+                if (cx - chipScroll_ < 8) chipScroll_ = cx - 8;
+                if (cx + chipW - chipScroll_ > B.x - A.x - 8) chipScroll_ = cx + chipW - (B.x - A.x) + 8;
+            }
+        lastChipCi_ = viewCi_;
+    }
+    ImGui::SetCursorScreenPos(A);
+    ImGui::InvisibleButton("##chips", ImVec2(B.x - A.x, B.y - A.y));
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 8.f)) chipScroll_ -= io.MouseDelta.x;
+    chipScroll_ = std::clamp(chipScroll_, 0.f, maxScroll);
+    int tapped = -1;
+    dl->AddRectFilled(A, B, col(kBg));
+    dl->PushClipRect(A, B, true);
+    for (int r = 0; r < n; ++r) {
+        int ci = order_[r];
+        const auto& ch = ov_.chroms()[ci];
+        float x = A.x + x0 + r * (chipW + gap) - chipScroll_;
+        if (x > B.x || x + chipW < A.x) continue;
+        ImVec2 c0(x, A.y + 8), c1(x + chipW, B.y - 8);
+        bool sel = ci == viewCi_;
+        if (ImGui::IsItemDeactivated() && io.MouseDragMaxDistanceSqr[0] < 100.f && io.MousePos.x >= c0.x && io.MousePos.x < c1.x) tapped = ci;
+        dl->AddRectFilled(c0, c1, col(sel ? kHover : kPanel), 8);
+        dl->AddRect(c0, c1, col(sel ? kAccent : kBorder), 8, 0, sel ? 1.5f : 1.f);
+        ImGui::PushFont(fonts().uiBold);
+        const char* nm = chipName(ch.name);
+        ImVec2 ts = ImGui::CalcTextSize(nm);
+        dl->AddText(ImVec2(x + (chipW - ts.x) * 0.5f, c0.y + 6), col(sel ? kAccent : kText), nm);
+        ImGui::PopFont();
+        // mini bar: known | introns+repeats | nothing known, not-in-GRCh38 hatched over the right end
+        float mw = chipW - 12, mx = x + 6, my0 = c1.y - 12, my1 = c1.y - 7, bx = mx;
+        double sh[3] = {ch.share(kExon) + ch.share(kCcre), ch.share(kIntron) + ch.share(kRepeat), ch.share(kNothing)};
+        unsigned cc[3] = {kColKnown, kColIntron, kColFog};
+        double tot = sh[0] + sh[1] + sh[2];
+        for (int k = 0; k < 3; ++k) {
+            float ww = tot > 0 ? float(mw * sh[k] / tot) : 0.f;
+            dl->AddRectFilled(ImVec2(bx, my0), ImVec2(bx + ww, my1), col(cc[k]));
+            bx += ww;
+        }
+        float hw = float(mw * std::clamp(ch.share(kNotIn), 0.0, 1.0));
+        if (ch.share(kNotIn) >= 0.025) {
+            dl->AddRectFilled(ImVec2(mx + mw - hw, my0), ImVec2(mx + mw, my1), col(kBg, 0.35f));
+            hatch(dl, mx + mw - hw, my0, mx + mw, my1, 1.f);
+        }
+    }
+    dl->PopClipRect();
+    if (tapped >= 0 && tapped != viewCi_) { setView(tapped, 0, 1e18); animating_ = false; }
+}
+
+void App::drawCardSheet(ImDrawList* dl, ImVec2 D) {
+    const bool live = hover_.valid;
+    if (!pinned_.valid && !live) { sheetState_ = 0; return; }
+    const float hs[3] = {kSheetPeek, D.y * 0.5f, D.y - kPhoneTopH - 8};
+    int st = live ? 0 : sheetState_;
+    float top = std::clamp(D.y - hs[st] + sheetDragY_, kPhoneTopH + 8, D.y - 40);
+    ImDrawList* sdl = ImGui::GetWindowDrawList();
+    sdl->AddRectFilled(ImVec2(0, top), ImVec2(D.x, D.y), col(kPanel), 12, ImDrawFlags_RoundCornersTop);
+    sdl->AddLine(ImVec2(12, top), ImVec2(D.x - 12, top), col(live ? kBorder : kAccent), 1.f);
+    drawCard(dl, ImVec2(0, top + kSheetHandle - 16), ImVec2(D.x, D.y + 16));  // card pads 16: content starts under the handle
+    if (live) return;  // long-press preview: no sheet gestures
+    float d = sheetHandle("##cardsheet", sdl, top, D.x, sheetDragY_);
+    if (d == 0.001f) sheetState_ = sheetState_ == 0 ? 1 : 0;
+    else if (d < -40.f) sheetState_ = std::min(2, sheetState_ + (d < -D.y * 0.4f ? 2 : 1));
+    else if (d > 40.f) {
+        if (sheetState_ == 0 || d > D.y * 0.4f) { pinned_ = {}; sheetState_ = 0; }  // swipe down from the peek unpins
+        else --sheetState_;
+    }
+}
+
+void App::drawLegendSheet(ImVec2 D, FogRenderer& fog) {
+    float h = D.y * 0.62f;
+    float top = std::max(kPhoneTopH + 8, D.y - h + std::max(0.f, sheetDragY_));
+    drawLegend(ImVec2(0, top), ImVec2(D.x, D.y + 10), fog);
+    float d = sheetHandle("##legendsheet", ImGui::GetWindowDrawList(), top, D.x, sheetDragY_);
+    if (d > 40.f) { legendOpen_ = false; sheetDragY_ = 0; }
+}
+
+void App::drawPhoneMenu(ImVec2 D) {
+    const float w = 228;
+    ImGui::SetNextWindowPos(ImVec2(D.x - w - 8, kPhoneTopH + 4));
+    ImGui::SetNextWindowSize(ImVec2(w, 0));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, vec(kPanel));
+    ImGui::PushStyleColor(ImGuiCol_Border, vec(kBorder));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
+    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.f, 0.5f));
+    ImGui::Begin("##phonemenu", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                             ImGuiWindowFlags_AlwaysAutoResize);
+    ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    auto item = [&](const char* label) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 12);
+        return ImGui::Selectable(label, false, 0, ImVec2(w - 32, 48));
+    };
+    if (item("Legend")) { legendOpen_ = true; sheetDragY_ = 0; phoneMenu_ = false; }
+    if (item("Downloads")) { phoneDownloads_ = true; phoneMenu_ = false; }
+    ImGui::End();
+    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor(2);
+    if (ImGui::IsMouseClicked(0) && !ImGui::IsMouseHoveringRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), false) &&
+        !ImGui::IsMouseHoveringRect(ImVec2(D.x - 48, 0), ImVec2(D.x, kPhoneTopH), false))
+        phoneMenu_ = false;  // tap outside closes
+}
+
+void App::drawDataScreen(ImVec2 D, bool firstRun) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(0, 0), D, col(kBg));
+    dl->AddRectFilled(ImVec2(0, 0), ImVec2(D.x, kPhoneTopH), col(kPanel));
+    dl->AddLine(ImVec2(0, kPhoneTopH - 0.5f), ImVec2(D.x, kPhoneTopH - 0.5f), col(kBorder));
+    float tx = 16;
+    if (!firstRun) {  // back arrow
+        ImGui::SetCursorScreenPos(ImVec2(2, 2));
+        if (ImGui::InvisibleButton("##dlback", ImVec2(44, 44))) phoneDownloads_ = false;
+        dl->AddLine(ImVec2(16, 24), ImVec2(30, 24), col(kText), 2.f);
+        dl->AddLine(ImVec2(16, 24), ImVec2(22, 18), col(kText), 2.f);
+        dl->AddLine(ImVec2(16, 24), ImVec2(22, 30), col(kText), 2.f);
+        tx = 52;
+    }
+    ImGui::PushFont(fonts().title);
+    dl->AddText(ImVec2(tx, (kPhoneTopH - ImGui::GetTextLineHeight()) * 0.5f), col(kText), firstRun ? "Get the data" : "Downloads");
+    ImGui::PopFont();
+
+    ImGui::SetCursorScreenPos(ImVec2(0, kPhoneTopH));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 16));
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 4);
+    ImGui::BeginChild("##datascreen", ImVec2(D.x, D.y - kPhoneTopH), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoBackground);
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 6.f))
+        ImGui::SetScrollY(ImGui::GetScrollY() - ImGui::GetIO().MouseDelta.y);
+    const float W = ImGui::GetContentRegionAvail().x - 2;
+    ImGui::PushTextWrapPos(W + 16);
+    if (firstRun)
+        ImGui::TextColored(vec(kMuted), "ProjectWisp shows the T2T-CHM13 (hs1) genome. It needs the core tracks before it can draw "
+                                        "anything; the rest is optional. Files come from the project's GitHub data release and are "
+                                        "checked with SHA-256.");
+    else
+        ImGui::TextColored(vec(kMuted), "Optional data for this phone. Files come from the project's GitHub data release and are "
+                                        "checked with SHA-256.");
+    ImGui::Dummy(ImVec2(0, 4));
+    long long all = 0;
+    for (const PackInfo& pi : kPackInfo) all += packBytes(pi.id);
+    ImGui::PushFont(fonts().mono);
+    ImGui::TextColored(vec(kText), "Core %s, everything %s", mbStr(packBytes("core")).c_str(), mbStr(all).c_str());
+    ImGui::PopFont();
+    ImGui::TextColored(vec(0x8A8F99), "%s", kStorageNote);  // shown right after the total size
+    ImGui::Dummy(ImVec2(0, 8));
+    const bool coreOk = packInstalled("core");
+    const int st = dlState_;
+    for (const PackInfo& pi : kPackInfo) {
+        long long bytes = packBytes(pi.id);
+        if (!bytes) continue;
+        bool installed = packInstalled(pi.id) || (std::string(pi.id) == "rsid" && rsid_.present());
+        bool mine = dlPack_ == pi.id;
+        ImGui::PushID(pi.id);
+        ImVec2 c0 = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::Indent(12);
+        ImGui::PushFont(fonts().uiBold);
+        ImGui::TextUnformatted(pi.name);
+        ImGui::PopFont();
+        std::string sz = mbStr(bytes);
+        ImGui::SameLine(W - 12 - ImGui::CalcTextSize(sz.c_str()).x);
+        ImGui::PushFont(fonts().mono);
+        ImGui::TextColored(vec(kText), "%s", sz.c_str());
+        ImGui::PopFont();
+        ImGui::PushTextWrapPos(c0.x + W - 12);
+        ImGui::PushFont(fonts().ui13);
+        ImGui::TextColored(vec(kMuted), "%s", pi.desc);
+        ImGui::PopFont();
+        ImGui::PopTextWrapPos();
+        if (installed) {
+            ImGui::TextColored(vec(kAccent), "Installed");
+        } else if (mine && st == 1) {
+            int ph = 0;
+            long long b = shownDlBytes(ph), t = dlTotal_;
+            char over[96];
+            if (ph == 0) std::snprintf(over, sizeof over, "Downloading %.0f / %.0f MB", b / 1048576.0, t / 1048576.0);
+            else std::snprintf(over, sizeof over, "Verifying checksum...");
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vec(kAccent));
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, vec(kHover));
+            ImGui::ProgressBar(ph == 0 && t > 0 ? float(double(b) / double(t)) : 1.f, ImVec2(W - 24, 28), over);
+            ImGui::PopStyleColor(2);
+        } else {
+            if (mine && st == 3) {
+                std::lock_guard<std::mutex> l(dlMu_);
+                ImGui::PushTextWrapPos(c0.x + W - 12);
+                ImGui::TextColored(vec(0xE8A13A), "Failed: %s", dlMsg_.c_str());
+                ImGui::PopTextWrapPos();
+            }
+            bool primary = std::string(pi.id) == "core";
+            bool can = st != 1 && (primary || coreOk);
+            ImGui::BeginDisabled(!can);
+            if (primary) {
+                ImGui::PushStyleColor(ImGuiCol_Button, vec(kAccent));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, vec(0x9AD3FF));
+                ImGui::PushStyleColor(ImGuiCol_Text, vec(kBg));
+            }
+            if (ImGui::Button(mine && st == 3 ? "Retry" : "Download", ImVec2(140, 44))) startDownload(pi.id);
+            if (primary) ImGui::PopStyleColor(3);
+            ImGui::EndDisabled();
+        }
+        ImGui::Unindent(12);
+        ImGui::Dummy(ImVec2(0, 6));
+        ImVec2 c1(c0.x + W, ImGui::GetCursorScreenPos().y);
+        ImGui::GetWindowDrawList()->AddRect(c0, c1, col(mine && st == 1 ? kAccent : kBorder), 8);
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::PopID();
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+}
+
+void App::framePhone(FogRenderer& fog) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImVec2 D = io.DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(D);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("##root", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(0, 0), D, col(kBg));
+    hover_ = {};
+    if (virtualClock_ >= 0) clock_ = virtualClock_;
+    else clock_ += io.DeltaTime;
+    if (needData_ || phoneDownloads_) {
+        if (needData_ && dlState_ == 2 && dlPack_ == "core") {  // core tracks arrived: load them and show the map
+            std::string err;
+            if (!initData(err)) {
+                std::lock_guard<std::mutex> l(dlMu_);
+                dlMsg_ = err;
+                dlState_ = 3;
+                needData_ = true;
+            }
+        }
+        if (dlState_ == 2 && dlPack_ == "rsid" && !rsid_.present()) rsid_.open(opt_.rsidPack.empty() ? opt_.dataDir + "/packs/rsid/rsid.idx" : opt_.rsidPack);
+        if (needData_ || phoneDownloads_) {
+            if (!needData_ && (ImGui::IsKeyPressed(ImGuiKey_AppBack) || ImGui::IsKeyPressed(ImGuiKey_Escape))) phoneDownloads_ = false;
+            drawDataScreen(D, needData_);
+            ImGui::End();
+            return;
+        }
+    }
+    if (animating_) {
+        double t = std::clamp((clock_ - animT0_) / 0.3, 0.0, 1.0);
+        double k = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+        double s0 = animS0_ + (animS1_ - animS0_) * k, e0 = animE0_ + (animE1_ - animE0_) * k;
+        if (t >= 1.0) { s0 = animS1_; e0 = animE1_; animating_ = false; }
+        setView(viewCi_, s0, e0);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_AppBack) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {  // Android back
+        if (packCard_) {}
+        else if (phoneSearch_) { phoneSearch_ = false; searchOpen_ = false; ImGui::SetWindowFocus(nullptr); }
+        else if (phoneMenu_) phoneMenu_ = false;
+        else if (legendOpen_) legendOpen_ = false;
+        else if (pinned_.valid) { pinned_ = {}; sheetState_ = 0; }
+    }
+    const bool modal = packCard_ || phoneSearch_ || phoneMenu_;
+    ImVec2 realMouse = io.MousePos;
+    if (modal) io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
+    // sheets cover the bottom of the region; the region's touch area stops at their top edge
+    float sheetTop = D.y;
+    if (legendOpen_) sheetTop = std::max(kPhoneTopH + 8, D.y - D.y * 0.62f);
+    else if (pinned_.valid) sheetTop = D.y - (sheetState_ == 0 ? kSheetPeek : sheetState_ == 1 ? D.y * 0.5f : D.y - kPhoneTopH - 8);
+    phonePinch();
+    if (!modal && realMouse.y >= sheetTop && !phoneSearch_) io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);  // the sheet owns touches over it
+    const float rTop = kPhoneTopH + kPhoneChipH;
+    drawRegion(dl, ImVec2(4, rTop), ImVec2(D.x - 4, std::max(rTop + 80, sheetTop - 4)), fog);
+    drawChips(dl, ImVec2(0, kPhoneTopH), ImVec2(D.x, rTop));
+    drawPhoneTopBar(dl, D.x);
+    io.MousePos = realMouse;
+    if (phoneMenu_) io.MousePos = realMouse;
+    if (!phoneSearch_ && !packCard_) {
+        if (phoneMenu_) io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
+        if (legendOpen_) drawLegendSheet(D, fog);
+        else drawCardSheet(dl, D);
+        io.MousePos = realMouse;
+    }
+    if (phoneMenu_) drawPhoneMenu(D);
+    if (phoneSearch_) {
+        dl->AddRectFilled(ImVec2(0, 0), D, col(kBg));
+        dl->AddRectFilled(ImVec2(0, 0), ImVec2(D.x, kPhoneTopH), col(kPanel));
+        ImGui::SetCursorScreenPos(ImVec2(2, 2));
+        if (ImGui::InvisibleButton("##searchback", ImVec2(44, 44))) { phoneSearch_ = false; searchOpen_ = false; }
+        dl->AddLine(ImVec2(16, 24), ImVec2(30, 24), col(kText), 2.f);
+        dl->AddLine(ImVec2(16, 24), ImVec2(22, 18), col(kText), 2.f);
+        dl->AddLine(ImVec2(16, 24), ImVec2(22, 30), col(kText), 2.f);
+        if (phoneSearch_) drawSearch(D.x);
+        if (phoneSearch_ && searchBuf_[0] == 0) {
+            ImGui::PushFont(fonts().ui13);
+            dl->AddText(nullptr, 0.f, ImVec2(16, 64), col(kMuted),
+                        rsid_.present() ? "Type a gene, an rsID or a position like chr22:20,340,000." : "Type a gene or a position like chr22:20,340,000.",
+                        nullptr, D.x - 32);
+            ImGui::PopFont();
+        }
+    }
+    drawPackCard(D);
+    ImGui::End();
 }
 
 }  // namespace wisp
