@@ -18,6 +18,7 @@ constexpr unsigned kColKnown = 0x4C8DFF, kColCcre = 0xF2B544, kColIntron = 0x4A5
 
 struct Fonts {
     ImFont* ui = nullptr;      // Inter 15
+    ImFont* uiSmall = nullptr; // Inter 11
     ImFont* uiBold = nullptr;  // Inter SemiBold 15
     ImFont* title = nullptr;   // Inter SemiBold 20
     ImFont* mono = nullptr;    // JetBrains Mono 13

@@ -18,6 +18,7 @@ bool apply(const char* assetDir) {
     cfg.OversampleV = 1;
     Fonts& f = fonts();
     f.ui = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 15.f, &cfg);
+    f.uiSmall = io.Fonts->AddFontFromFileTTF((d + "Inter-Regular.ttf").c_str(), 11.f, &cfg);
     f.uiBold = io.Fonts->AddFontFromFileTTF((d + "Inter-SemiBold.ttf").c_str(), 15.f, &cfg);
     f.title = io.Fonts->AddFontFromFileTTF((d + "Inter-SemiBold.ttf").c_str(), 20.f, &cfg);
     f.mono = io.Fonts->AddFontFromFileTTF((d + "JetBrainsMono-Regular.ttf").c_str(), 13.f, &cfg);

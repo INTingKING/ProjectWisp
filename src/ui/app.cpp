@@ -284,6 +284,9 @@ void App::frame(FogRenderer& fog) {
         else pinned_ = {};
     }
 
+    // modal open: the map gets no hover or clicks
+    ImVec2 realMouse = io.MousePos;
+    if (packCard_) io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
     drawTopBar(dl, D.x);
     float y = drawCoverage(dl, kTopBarH, D.x);
     float leftW = D.x - kMargin * 3 - kCardW;
@@ -293,6 +296,7 @@ void App::frame(FogRenderer& fog) {
     drawOverview(dl, ovA, ovB, fog);
     drawRegion(dl, rgA, rgB, fog);
     drawCard(dl, cdA, cdB);
+    io.MousePos = realMouse;
     drawSearch(D.x);
     drawPackCard(D);
     ImGui::End();
@@ -664,7 +668,7 @@ void App::drawPackCard(ImVec2 D) {
     }
     if (!packCard_) return;
     // first-run style download card, showing only the optional rsID pack
-    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), D, col(kBg, 0.55f));  // dims the root window only
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), D, col(0x0F1115, 0.60f));  // 60% scrim over the root window
     searchOpen_ = false;
     const float w = 480;
     ImGui::SetNextWindowPos(ImVec2((D.x - w) * 0.5f, D.y * 0.28f));
@@ -715,6 +719,8 @@ void App::drawPackCard(ImVec2 D) {
         if (ImGui::Button(st == 3 ? "Retry download" : "Download", ImVec2(140, 30))) startPackDownload();
         ImGui::PopStyleColor(3);
         ImGui::SameLine();
+        if (ImGui::Button("Close", ImVec2(90, 30))) packCard_ = false;  // secondary, right of Download
+        ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(vec(kMuted), "prebuilt, checksum-verified");
     }
@@ -731,7 +737,9 @@ void App::drawPackCard(ImVec2 D) {
         if (ImGui::SmallButton("Copy command")) ImGui::SetClipboardText("scripts/fetch_rsid_pack.sh");
     }
     ImGui::Spacing();
-    if (ImGui::Button(st == 1 ? "Hide" : "Close") || ImGui::IsKeyPressed(ImGuiKey_Escape)) packCard_ = false;
+    bool showsDl = !rsid_.present() && st != 1;
+    if (!showsDl) { if (ImGui::Button(st == 1 ? "Hide" : "Close", ImVec2(90, 30))) packCard_ = false; }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) packCard_ = false;
     ImGui::End();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(4);
@@ -997,13 +1005,14 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
 
     // track heights (genes 48, cCRE 24, repeats 24); each track has a 14px header line for hints
     const float varH = 20;
-    const float hdrH = 14, geneTrackH = 48, ccreH = 24, repH = 24, niH = 14;
+    const float hdrH = 14, geneTrackH = 48, ccreH = 24, repH = 24, niH = 10;
     const float stackH = 26 + (10 + 8) + (hdrH + 20 + 6) + (hdrH + geneTrackH + 6) + (hdrH + ccreH + 6) + (hdrH + repH + 6) + niH + (6 + hdrH + varH) + (6 + hdrH + (svExpanded_ ? std::max(20.f, svRowsLast_ * 7.f + 5.f) : 20.f));
-    const float availTop = A.y + 40, availBot = B.y - 30;
-    float y = availTop + std::max(0.f, (availBot - availTop - stackH) * 0.5f);
+    const float availBot = B.y - 30;
+    (void)availBot; (void)stackH;
+    float y = A.y + 28 + 16;  // top-aligned, 16px under the Region header
     auto hint = [&](float hy, const char* t) {
-        ImGui::PushFont(fonts().monoSmall);
-        dl->AddText(ImVec2(tx0, hy + 1), col(kMuted), t);
+        ImGui::PushFont(fonts().uiSmall);
+        dl->AddText(ImVec2(tx0, hy + 1), col(0x6B7280), t);
         ImGui::PopFont();
     };
     // ruler
@@ -1412,12 +1421,12 @@ void App::drawRegion(ImDrawList* dl, ImVec2 A, ImVec2 B, FogRenderer& fog) {
     svMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - svT0).count();
     const float tracksBottom = svY + svH;
 
-    // fog over 'nothing known' columns, spanning all lanes
+    // fog over 'nothing known' columns: Category row only (spanning every lane made full-height stripes when zoomed out)
     for (int p = 0; p < cols;) {
         if (cat[p] != kNothing || !catKnown[p]) { ++p; continue; }
         int q = p;
         while (q < cols && cat[q] == kNothing && catKnown[q]) ++q;
-        fogRects.push_back({tx0 + p - 2, tracksTop - 4, tx0 + q + 2, tracksBottom + 4, 0.55f, 24.f, 10.f});
+        fogRects.push_back({tx0 + p - 2, catY - 2, tx0 + q + 2, catY + catH + 2, 0.55f, 24.f, 10.f});
         p = q;
     }
     // loading: 40% fog over the lane that is still waiting on tabix
@@ -1504,8 +1513,10 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
         ImGui::Dummy(ImVec2(0, 7));
     };
     auto heading = [&](const char* t) {
-        ImGui::PushFont(fonts().monoSmall);
-        ImGui::TextColored(vec(kMuted), "%s", t);
+        ImGui::Dummy(ImVec2(0, 8 - 4));  // 8px above (item spacing supplies 4)
+        std::string up(t); for (auto& c : up) c = char(std::toupper((unsigned char)c));
+        ImGui::PushFont(fonts().uiSmall);
+        ImGui::TextColored(vec(0x8A8F99), "%s", up.c_str());
         ImGui::PopFont();
     };
     auto swatch = [&](unsigned c, bool hatched = false) {
@@ -1643,12 +1654,32 @@ void App::drawCard(ImDrawList* dl, ImVec2 A, ImVec2 B) {
                 ImGui::PopID();
                 if (cardSvExpanded_) {
                     ImGui::Indent(20);
+                    // identical-looking alleles (same short description and count) collapse into one 'N×' row
+                    auto shortDesc = [&](const Sv* x) {
+                        if (x->type != SvType::Complex) return describe(x);
+                        return "Complex rearrangement over " + kb(x->refLen) + (x->inv ? ", contains an inversion" : "");
+                    };
+                    std::vector<std::pair<std::string, int>> rows;  // key -> first allele index
+                    std::vector<int> mult;
                     for (int i = 0; i < g->count; ++i) {
                         const Sv* x = &g->alleles[i];
-                        ImGui::TextColored(vec(kText, 0.85f), "%s", describe(x).c_str());
-                        ImGui::PushFont(fonts().monoSmall);
-                        ImGui::TextColored(vec(kMuted), "  %s%d of %d copies", x->merged > 1 ? "at least " : "", x->ac, x->an);
-                        ImGui::PopFont();
+                        std::string key = shortDesc(x) + "|" + std::to_string(x->ac) + "|" + std::to_string(x->an) + "|" + std::to_string(x->merged > 1);
+                        size_t k = 0;
+                        while (k < rows.size() && rows[k].first != key) ++k;
+                        if (k == rows.size()) { rows.push_back({key, i}); mult.push_back(0); }
+                        ++mult[k];
+                    }
+                    for (size_t k = 0; k < rows.size(); ++k) {
+                        const Sv* x = &g->alleles[rows[k].second];
+                        if (mult[k] > 1) {
+                            ImGui::TextColored(vec(kText, 0.85f), "%d\xC3\x97 %s (%s%d of %d copies each)", mult[k], shortDesc(x).c_str(),
+                                               x->merged > 1 ? "at least " : "", x->ac, x->an);
+                        } else {
+                            ImGui::TextColored(vec(kText, 0.85f), "%s", describe(x).c_str());
+                            ImGui::PushFont(fonts().monoSmall);
+                            ImGui::TextColored(vec(kMuted), "  %s%d of %d copies", x->merged > 1 ? "at least " : "", x->ac, x->an);
+                            ImGui::PopFont();
+                        }
                     }
                     ImGui::Unindent(20);
                 }
